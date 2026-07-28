@@ -14,18 +14,18 @@
 # wheel_separation / wheel_radius are placeholders — set them for your robot.
 mdrobot_hardware:
   ros__parameters:
-    port: /dev/ttyUSB0
+    port: /dev/serial/by-id/usb-1a86_USB_Serial-if00-port0
     baudrate: 19200
     # Per-wheel Modbus slave ids — MUST be distinct (on_init rejects equal ids).
     motor_id_L: 1
     motor_id_R: 2
     # Skid-steer mounts the motors mirrored; set the side that spins backwards true.
-    reverse_L: false
+    reverse_L: true
     reverse_R: false
     # Per-wheel counts/rev (hall = 3 x pole count; MD400 8-pole ~ 24). 0 = raw.
-    counts_per_rev_L: 24.0
-    counts_per_rev_R: 24.0
-    use_limit_sw: -1      # -1 leave as-is / 0 disable / 1 enable (some need 0 for serial)
+    counts_per_rev_L: 30.0
+    counts_per_rev_R: 30.0
+    use_limit_sw: 0      # -1 leave as-is / 0 disable / 1 enable (some need 0 for serial)
     auto_enable: true
 
 controller_manager:
@@ -47,8 +47,8 @@ diff_cont:
   ros__parameters:
     left_wheel_names: ["motor_L"]
     right_wheel_names: ["motor_R"]
-    wheel_separation: 0.30
-    wheel_radius: 0.05
+    wheel_separation: 0.4
+    wheel_radius: 0.00307
     # State feedback is in SI when counts_per_rev is set in the URDF.
     open_loop: false
     base_frame_id: base_link

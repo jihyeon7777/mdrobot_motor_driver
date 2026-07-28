@@ -27,6 +27,7 @@ from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import Command, FindExecutable, LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def _load_hardware_params(controllers_path):
@@ -65,7 +66,9 @@ def launch_setup(context, *args, **kwargs):
     for key, value in hw.items():
         sval = str(value).lower() if isinstance(value, bool) else str(value)
         xacro_cmd += [f" {key}:=", sval]
-    robot_description = {"robot_description": Command(xacro_cmd)}
+    robot_description = {
+        "robot_description": ParameterValue(Command(xacro_cmd), value_type=str)
+    }
 
     control_node = Node(
         package="controller_manager",

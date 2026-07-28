@@ -41,7 +41,7 @@ install(TARGETS ${PROJECT_NAME}
   RUNTIME DESTINATION bin
 )
 install(DIRECTORY include/ DESTINATION include)
-install(DIRECTORY config urdf launch DESTINATION share/${PROJECT_NAME})
+install(DIRECTORY config urdf launch meshes DESTINATION share/${PROJECT_NAME})
 
 # --- tests -------------------------------------------------------------
 if(BUILD_TESTING)
