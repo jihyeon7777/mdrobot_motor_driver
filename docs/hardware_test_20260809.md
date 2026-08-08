@@ -249,6 +249,29 @@ GP26은 시험 내내 raw 986 ~ 1009로 고정, 모터 구동과 무관(Δ +0.00
 | 8 | 부하 상태(바퀴 접지) 전류 재시험 | 미조치 |
 | 9 | 모터 구동 중 IMU 간섭(EMI·진동) 시험 | 미조치 |
 
+## 재현 — 시험 스크립트
+
+전부 `test/` 아래에 있다. 저장소 상대경로로 동작하므로 어디서 실행해도 된다.
+
+| 스크립트 | 하는 일 | 모터 |
+|---|---|---|
+| `test/probe_devices.py` | 세 장치 연결 확인 (버전·전압·상태) | 정지 |
+| `test/probe_detail.py` | MD400 구동 준비 상태 + UM7 파싱 + Pico 계측값 | 정지 |
+| `test/um7_static_test.py` | IMU 정적 시험 — 패킷 무결성 / 바이어스 / 드리프트 | — |
+| `test/pico_flash.py` | Pico `main.py` 대조·백업·업로드 (mpremote 불필요) | — |
+| `test/estop_test.py` | 비상정지 시험 + 전류 동시 계측 | **회전** |
+| `test/current_sweep.py` | 전류-속도 계단 스윕 | **회전** |
+| `test/current_channel_map.py` | 한쪽씩 단독 구동해 채널-모터 대응 확정 | **회전** |
+
+```bash
+python3 test/probe_devices.py                          # 읽기 전용
+python3 test/estop_test.py --rpm 100 --sec 20          # 모터가 돈다
+python3 test/current_sweep.py --steps 100,250,500,750,1000
+python3 test/um7_static_test.py --sec 60
+```
+
+측정 로그: `test/logs/sweep_current_0809.csv`, `estop_current_0809.csv`, `estop_motor_0809.csv`.
+
 ## 부록 — 시험 조건
 
 - 모든 모터 시험은 **바퀴를 띄운 무부하** 상태. 전 시험에서 알람 비트 없음.
