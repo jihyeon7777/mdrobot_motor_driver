@@ -11,7 +11,7 @@
 
 from mdrobot import SingleMotorDriver
 
-PORT = "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0"
+PORT = "/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_BG043HTG-if00-port0"
 ENC_PPR = 156          # 엔코더 PPR 레지스터
 SLAVE_IDS = [1, 2]     # 1 = 왼쪽, 2 = 오른쪽
 

@@ -14,7 +14,7 @@
 # wheel_separation / wheel_radius are placeholders — set them for your robot.
 mdrobot_hardware:
   ros__parameters:
-    port: /dev/serial/by-id/usb-1a86_USB_Serial-if00-port0
+    port: /dev/serial/by-id/usb-FTDI_FT232R_USB_UART_BG043HTG-if00-port0
     baudrate: 19200
     # Per-wheel Modbus slave ids — MUST be distinct (on_init rejects equal ids).
     motor_id_L: 1

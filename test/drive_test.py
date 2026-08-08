@@ -25,7 +25,7 @@ import time
 
 from mdrobot import SingleMotorDriver
 
-PORT = "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0"  # MD400들이 물린 어댑터
+PORT = "/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_BG043HTG-if00-port0"  # MD400들이 물린 어댑터
 RPM = 30          # 테스트 속도 (저속)
 RUN_SEC = 2.0     # 도는 시간 (짧게)
 POLL_SEC = 0.5    # 속도 읽는 간격
