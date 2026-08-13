@@ -2,7 +2,7 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>oroha_power</name>
-  <version>1.0.1</version>
+  <version>1.0.2</version>
   <description>OROHA 전류·전압 계측 프론트엔드 — Raspberry Pi Pico(USB CDC) 브리지</description>
   <maintainer email="taesuyim.kopo@gmail.com">OROHA</maintainer>
   <license>Apache-2.0</license>

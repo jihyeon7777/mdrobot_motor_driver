@@ -55,6 +55,7 @@ class OrohaPowerNode(Node):
         d("baud", 115200)
         d("frame_id", "oroha_power")
         d("auto_start", True)          # 연결 후 S 명령 자동 전송
+        d("rate", 50)                  # 연결 후 P<hz> 로 강제. 0 이면 펌웨어 기본값 사용
         d("zero_on_start", False)      # 시작 시 영점 보정(정지 상태일 때만!)
         d("battery_rate", 10.0)
         d("diag_rate", 1.0)
@@ -128,6 +129,12 @@ class OrohaPowerNode(Node):
             time.sleep(0.3)
             self.ser.reset_input_buffer()
             self.send("C")
+            rate = int(self.p("rate"))
+            if rate:
+                # 펌웨어 기본값에 기대지 않고 명시적으로 맞춘다. 100 Hz 는 매 표본이
+                # overrun 으로 찍혀 flags_seen 이 상시 켜진다 — 2026-08-13 보고서 §6.
+                self.send("P%d" % rate)
+                time.sleep(0.2)
             if self.p("zero_on_start"):
                 self.send("Z")
                 time.sleep(1.5)

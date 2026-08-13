@@ -21,6 +21,7 @@ def generate_launch_description():
                 'baud': 115200,
                 'frame_id': 'oroha_power',
                 'auto_start': True,
+                'rate': 50,                # P<hz>. 100 은 상시 overrun — 보고서 20260813 §6
                 'zero_on_start': zero,
                 # ── as-built 상수 (설계 문서 §13.0) ──
                 'v_per_lsb': 9.1312e-3,    # LSB_V × DIV_RATIO 11.3310 (2026-08-13 1 점 적합)

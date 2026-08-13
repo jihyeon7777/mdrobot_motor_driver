@@ -5,7 +5,7 @@ Sheet A 구성(CJMCU-758 ×2 @3.3 V + Raspberry Pi Pico) 전용.
 
 | 파일 | 내용 |
 |---|---|
-| `pico/main.py` | Pico 펌웨어 (MicroPython). 100 Hz, CSV 한 줄 출력 |
+| `pico/main.py` | Pico 펌웨어 (MicroPython). 50 Hz, CSV 한 줄 출력 |
 | `tools/oroha_bench.py` | ROS2 없이 도는 벤치 도구 — T3(방향)·T4(노이즈)·교정·로깅 |
 | `ros2/oroha_power/` | ROS2 패키지 (ament_python). 커스텀 msg 없음 |
 
@@ -52,7 +52,7 @@ mpremote connect /dev/ttyACM0 repl     # Ctrl-] 로 나감
 | `V` | 환산값 한 줄 (사람이 읽는 용) |
 | `G` | 통계 (가동시간, seq, overrun, 창 소요시간) |
 | `A<n>` | 창당 라운드 수 (기본 32) |
-| `P<hz>` | 출력 주기 (기본 100) |
+| `P<hz>` | 출력 주기 (기본 50 — 아래 overrun 항 참조) |
 | `H` | 도움말 |
 
 ### 출력 형식
@@ -69,7 +69,7 @@ D,412,4120000,32,2607.45,2604,2610,2047.52,2043,2052,2047.48,2043,2052,64
 
 > `overrun`이 뜨면 창을 못 채운 것이다. **`P50`으로 출력 주기를 늦춘다.**
 >
-> **기본 100 Hz에서는 전 표본에 overrun이 뜬다.** 창이 8 ms인데 루프 한 바퀴가 약 10.1 ms라
+> **`P100`으로 올리면 전 표본에 overrun이 뜬다.** 창이 8 ms인데 루프 한 바퀴가 약 10.1 ms라
 > 한 번 밀리면, `next_t`(`pico/main.py:382`)가 실제 지연을 반영하지 않고 한 주기만 더하므로
 > 이후 계속 늦은 것으로 표시된다. 50 Hz에서는 0.8% 수준이다
 > ([2026-08-13 보고서 §6](../docs/hardware_test_20260813.md)).
@@ -163,7 +163,8 @@ ros2 param set /oroha_power scale_il 1.004      # 교정 결과 반영
 ros2 param set /oroha_power sign_ir -1          # T3 에서 부호가 반대였다면
 ```
 
-`v_per_lsb 9.1312e-3` · `a_per_lsb 30.52e-3` · `scale_v/il/ir` · `sign_il/ir` · `zero_il/ir`(펌웨어 `#ZERO`로 자동 갱신) · `port` · `baud` · `auto_start` · `zero_on_start`.
+`v_per_lsb 9.1312e-3` · `a_per_lsb 30.52e-3` · `scale_v/il/ir` · `sign_il/ir` · `zero_il/ir`(펌웨어 `#ZERO`로 자동 갱신) · `port` · `baud` · `auto_start` ·
+`rate`(연결 후 `P<hz>` 로 강제, 기본 50. `0`이면 펌웨어 기본값을 그대로 둔다) · `zero_on_start`.
 
 > ⚠ `v_per_lsb`는 펌웨어 `#CFG`를 **따라가지 않는다.** 노드는 `#ZERO`만 파라미터로 반영하고
 > `#CFG`는 로깅만 한다(`power_node.py:195`). 펌웨어 `DIV_RATIO`를 바꾸면 이 파라미터와
@@ -172,7 +173,7 @@ ros2 param set /oroha_power sign_ir -1          # T3 에서 부호가 반대였�
 ### 확인
 
 ```bash
-ros2 topic hz /oroha_power/measured        # 100 Hz 나와야 함
+ros2 topic hz /oroha_power/measured        # 50 Hz 나와야 함 (rate 파라미터와 일치)
 ros2 topic echo /oroha_power/measured --once
 ros2 run rqt_runtime_monitor rqt_runtime_monitor   # 또는 ros2 topic echo /diagnostics
 ros2 bag record /oroha_power/measured /oroha_power/raw /diagnostics
