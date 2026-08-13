@@ -27,7 +27,8 @@ except ImportError:
     sys.exit("pyserial 이 필요합니다:  pip install pyserial")
 
 # as-built 상수 (설계 문서 §13.0) — 펌웨어 #CFG 로 덮어쓴다
-CFG = dict(v_per_lsb=9.665e-3, a_per_lsb=30.52e-3, scale_v=1.0,
+# v_per_lsb 는 2026-08-13 에 28.8 V 1 점 적합으로 갱신됨 (DIV_RATIO 11.9929 → 11.3310)
+CFG = dict(v_per_lsb=9.1312e-3, a_per_lsb=30.52e-3, scale_v=1.0,
            scale_il=1.0, scale_ir=1.0, sign_il=1, sign_ir=1,
            zero_il=2048.0, zero_ir=2048.0, lin_lo=410, lin_hi=3686)
 

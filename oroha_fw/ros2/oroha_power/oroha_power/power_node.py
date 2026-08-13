@@ -61,7 +61,8 @@ class OrohaPowerNode(Node):
         d("sync_window", 500)          # 최소값 필터 창 크기 (프레임)
 
         # as-built 상수 (설계 문서 §13.0). 교정 후 여기만 고치면 된다.
-        d("v_per_lsb", 9.665e-3)       # LSB_V × DIV_RATIO(11.9929)
+        # ⚠ 이 노드는 펌웨어 #CFG 를 무시한다(_meta 는 로깅만). 펌웨어 상수를 바꾸면 여기도 같이.
+        d("v_per_lsb", 9.1312e-3)      # LSB_V × DIV_RATIO(11.3310) — 2026-08-13 28.8 V 1 점 적합
         d("a_per_lsb", 30.52e-3)       # LSB_V ÷ 26.4 mV/A
         d("scale_v", 1.0)
         d("scale_il", 1.0)

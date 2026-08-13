@@ -23,7 +23,7 @@ def generate_launch_description():
                 'auto_start': True,
                 'zero_on_start': zero,
                 # ── as-built 상수 (설계 문서 §13.0) ──
-                'v_per_lsb': 9.665e-3,     # LSB_V × DIV_RATIO 11.9929
+                'v_per_lsb': 9.1312e-3,    # LSB_V × DIV_RATIO 11.3310 (2026-08-13 1 점 적합)
                 'a_per_lsb': 30.52e-3,     # LSB_V ÷ 26.4 mV/A
                 'scale_v': 1.0,            # 교정(C6) 후 갱신
                 'scale_il': 1.0,           # 교정(C4) 후 갱신

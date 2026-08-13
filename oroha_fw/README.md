@@ -154,7 +154,11 @@ ros2 param set /oroha_power scale_il 1.004      # 교정 결과 반영
 ros2 param set /oroha_power sign_ir -1          # T3 에서 부호가 반대였다면
 ```
 
-`v_per_lsb 9.665e-3` · `a_per_lsb 30.52e-3` · `scale_v/il/ir` · `sign_il/ir` · `zero_il/ir`(펌웨어 `#ZERO`로 자동 갱신) · `port` · `baud` · `auto_start` · `zero_on_start`.
+`v_per_lsb 9.1312e-3` · `a_per_lsb 30.52e-3` · `scale_v/il/ir` · `sign_il/ir` · `zero_il/ir`(펌웨어 `#ZERO`로 자동 갱신) · `port` · `baud` · `auto_start` · `zero_on_start`.
+
+> ⚠ `v_per_lsb`는 펌웨어 `#CFG`를 **따라가지 않는다.** 노드는 `#ZERO`만 파라미터로 반영하고
+> `#CFG`는 로깅만 한다(`power_node.py:195`). 펌웨어 `DIV_RATIO`를 바꾸면 이 파라미터와
+> `launch/power.launch.py`도 같이 고쳐야 조용히 어긋나지 않는다.
 
 ### 확인
 
