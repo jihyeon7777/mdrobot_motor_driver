@@ -49,7 +49,7 @@ SUMMARY_COLS = [
     "iso_time", "unix_t", "elapsed_h", "point",
     "div", "v_per_lsb",
     "n_pico", "pico_raw_mean", "pico_raw_sd", "pico_raw_min", "pico_raw_max",
-    "pico_v", "pico_v_sd", "il_a", "ir_a", "flags_or", "overrun_n",
+    "pico_v", "pico_v_sd", "gp28_a", "gp27_a", "flags_or", "overrun_n",
     "n_md1", "md1_raw_mean", "md1_v", "n_md2", "md2_raw_mean", "md2_v",
     "gap_v", "note",
 ]
@@ -177,8 +177,8 @@ def sample(point: int, t0: float, args) -> tuple[dict, list[tuple]]:
     v_per_lsb = lsb_v * div if div else cfg.get("v_per_lsb", 9.1312e-3)
     scale_v = cfg.get("scale_v", 1.0)
     a_per_lsb = cfg.get("a_per_lsb", 30.525e-3)
-    zero_il = cfg.get("zero_il", 2048.0)
-    zero_ir = cfg.get("zero_ir", 2048.0)
+    zero_gp28 = cfg.get("zero_gp28", 2048.0)
+    zero_gp27 = cfg.get("zero_gp27", 2048.0)
 
     now = time.time()
     r: dict = {c: "" for c in SUMMARY_COLS}
@@ -200,8 +200,8 @@ def sample(point: int, t0: float, args) -> tuple[dict, list[tuple]]:
                  pico_raw_max=max(x[5] for x in rows),
                  pico_v="%.4f" % st.mean(volts),
                  pico_v_sd="%.5f" % (st.pstdev(volts) if len(volts) > 1 else 0.0),
-                 il_a="%+.4f" % st.mean([(x[7] - zero_il) * a_per_lsb for x in rows]),
-                 ir_a="%+.4f" % st.mean([(x[6] - zero_ir) * a_per_lsb for x in rows]),
+                 gp28_a="%+.4f" % st.mean([(x[7] - zero_gp28) * a_per_lsb for x in rows]),
+                 gp27_a="%+.4f" % st.mean([(x[6] - zero_gp27) * a_per_lsb for x in rows]),
                  flags_or=acc,
                  overrun_n=sum(1 for f in fl if f & 0x80))
     else:
@@ -255,7 +255,7 @@ def main() -> int:
         bf = open(burst_path, "w", newline="", buffering=1)
         bw = csv.writer(bf)
         bw.writerow(["point", "host_t", "seq", "t_us", "v_mean", "v_min", "v_max",
-                     "ir_mean", "il_mean", "flags"])
+                     "gp27_mean", "gp28_mean", "flags"])
 
     t0 = time.time()
     try:

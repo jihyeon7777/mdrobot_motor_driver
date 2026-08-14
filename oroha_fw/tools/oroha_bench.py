@@ -10,7 +10,7 @@ OROHA 벤치 도구 — ROS2 없이 단독 실행. T3(방향)·T4(노이즈)·C3
   python3 oroha_bench.py --port /dev/ttyACM0 noise --sec 60   # T4 무부하 노이즈
   python3 oroha_bench.py --port /dev/ttyACM0 direction        # T3 전류 방향/부호
   python3 oroha_bench.py --port /dev/ttyACM0 log --sec 300 -o run.csv
-  python3 oroha_bench.py --port /dev/ttyACM0 calib --ref 5.02 --ch IL   # C4 1점 기록
+  python3 oroha_bench.py --port /dev/ttyACM0 calib --ref 5.02 --ch GP28 # C4 1점 기록
 
 라이선스: Apache-2.0
 """
@@ -29,10 +29,10 @@ except ImportError:
 # as-built 상수 (설계 문서 §13.0) — 펌웨어 #CFG 로 덮어쓴다
 # v_per_lsb 는 2026-08-13 에 28.8 V 1 점 적합으로 갱신됨 (DIV_RATIO 11.9929 → 11.3310)
 CFG = dict(v_per_lsb=9.1312e-3, a_per_lsb=30.52e-3, scale_v=1.0,
-           scale_il=1.0, scale_ir=1.0, sign_il=1, sign_ir=1,
-           zero_il=2048.0, zero_ir=2048.0, lin_lo=410, lin_hi=3686)
+           scale_gp28=1.0, scale_gp27=1.0, sign_gp28=1, sign_gp27=1,
+           zero_gp28=2048.0, zero_gp27=2048.0, lin_lo=410, lin_hi=3686)
 
-FLAG = {0: "V<lo", 1: "IR<lo", 2: "IL<lo", 3: "V>hi", 4: "IR>hi", 5: "IL>hi",
+FLAG = {0: "V<lo", 1: "GP27<lo", 2: "GP28<lo", 3: "V>hi", 4: "GP27>hi", 5: "GP28>hi",
         6: "zero_ok", 7: "OVERRUN"}
 
 
@@ -71,7 +71,7 @@ def read_cfg(s):
 
 
 def parse(line):
-    """'D,seq,t_us,n,v_mean,v_min,v_max,ir_...,il_...,flags' → dict"""
+    """'D,seq,t_us,n,v_mean,v_min,v_max,gp27_...,gp28_...,flags' → dict"""
     if not line.startswith("D,"):
         return None
     p = line.split(",")
@@ -80,8 +80,8 @@ def parse(line):
     try:
         return dict(seq=int(p[1]), t_us=int(p[2]), n=int(p[3]),
                     v=float(p[4]), v_lo=int(p[5]), v_hi=int(p[6]),
-                    ir=float(p[7]), ir_lo=int(p[8]), ir_hi=int(p[9]),
-                    il=float(p[10]), il_lo=int(p[11]), il_hi=int(p[12]),
+                    gp27=float(p[7]), gp27_lo=int(p[8]), gp27_hi=int(p[9]),
+                    gp28=float(p[10]), gp28_lo=int(p[11]), gp28_hi=int(p[12]),
                     flags=int(p[13]))
     except ValueError:
         return None
@@ -89,9 +89,9 @@ def parse(line):
 
 def eng(d):
     v = d["v"] * CFG["v_per_lsb"] * CFG["scale_v"]
-    il = (d["il"] - CFG["zero_il"]) * CFG["a_per_lsb"] * CFG["scale_il"] * CFG["sign_il"]
-    ir = (d["ir"] - CFG["zero_ir"]) * CFG["a_per_lsb"] * CFG["scale_ir"] * CFG["sign_ir"]
-    return v, il, ir
+    i28 = (d["gp28"] - CFG["zero_gp28"]) * CFG["a_per_lsb"] * CFG["scale_gp28"] * CFG["sign_gp28"]
+    i27 = (d["gp27"] - CFG["zero_gp27"]) * CFG["a_per_lsb"] * CFG["scale_gp27"] * CFG["sign_gp27"]
+    return v, i28, i27
 
 
 def collect(s, sec, show=False):
@@ -109,9 +109,9 @@ def collect(s, sec, show=False):
             last_seq = d["seq"]
             rows.append(d)
             if show and len(rows) % 20 == 0:
-                v, il, ir = eng(d)
-                sys.stdout.write("\r  %6.2f s  V %7.3f V   I_L %+8.3f A   I_R %+8.3f A   P %8.2f W   n=%d "
-                                 % (time.time() - t0, v, il, ir, v * (il + ir), len(rows)))
+                v, i28, i27 = eng(d)
+                sys.stdout.write("\r  %6.2f s  V %7.3f V   GP28 %+8.3f A   GP27 %+8.3f A   P %8.2f W   n=%d "
+                                 % (time.time() - t0, v, i28, i27, v * (i28 + i27), len(rows)))
                 sys.stdout.flush()
     except KeyboardInterrupt:
         pass
@@ -158,8 +158,8 @@ def do_noise(s, a):
 
     blocks = [
         stat_block("V_bus", [r["v"] for r in rows], CFG["v_per_lsb"], "V"),
-        stat_block("I_L", [r["il"] for r in rows], CFG["a_per_lsb"], "A"),
-        stat_block("I_R", [r["ir"] for r in rows], CFG["a_per_lsb"], "A"),
+        stat_block("GP28", [r["gp28"] for r in rows], CFG["a_per_lsb"], "A"),
+        stat_block("GP27", [r["gp27"] for r in rows], CFG["a_per_lsb"], "A"),
     ]
     print("\n" + "=" * 74)
     print("  T4 결과   프레임 %d 개 · 실측 %.2f Hz · 누락 %d" % (len(rows), rate_of(rows), gaps))
@@ -180,7 +180,7 @@ def do_noise(s, a):
     for r in rows:
         fl |= r["flags"]
     if fl & 0x80:
-        print("  ⚠ OVERRUN 발생 — 펌웨어에서 A<n> 으로 라운드 수를 줄이세요")
+        print("  ⚠ OVERRUN 발생 — P<hz> 로 주기를 낮추세요 (A<n> 은 창 길이를 안 바꿉니다)")
     if fl & 0x3F:
         print("  ⚠ 선형성 창 이탈:", [FLAG[i] for i in range(6) if fl & (1 << i)])
     if a.out:
@@ -196,17 +196,17 @@ def do_direction(s, a):
     for ln in cmd(s, "Z", 1.5):
         print("  " + ln)
     base, _ = collect(s, 3)
-    b_il = st.fmean([r["il"] for r in base])
-    b_ir = st.fmean([r["ir"] for r in base])
-    print("  무부하 raw   I_L %.2f   I_R %.2f" % (b_il, b_ir))
+    b_28 = st.fmean([r["gp28"] for r in base])
+    b_27 = st.fmean([r["gp27"] for r in base])
+    print("  무부하 raw   GP28 %.2f   GP27 %.2f" % (b_28, b_27))
     print("\n  2) 알려진 방전 부하를 걸고 Enter (전류가 배터리에서 부하로 흐르는 상태)")
     input("  준비되면 Enter: ")
     load, _ = collect(s, 3)
-    l_il = st.fmean([r["il"] for r in load])
-    l_ir = st.fmean([r["ir"] for r in load])
-    print("  부하 raw     I_L %.2f   I_R %.2f" % (l_il, l_ir))
+    l_28 = st.fmean([r["gp28"] for r in load])
+    l_27 = st.fmean([r["gp27"] for r in load])
+    print("  부하 raw     GP28 %.2f   GP27 %.2f" % (l_28, l_27))
     print("\n" + "=" * 74)
-    for nm, b, l, sgn in (("I_L", b_il, l_il, CFG["sign_il"]), ("I_R", b_ir, l_ir, CFG["sign_ir"])):
+    for nm, b, l, sgn in (("GP28", b_28, l_28, CFG["sign_gp28"]), ("GP27", b_27, l_27, CFG["sign_gp27"])):
         d = l - b
         amp = d * CFG["a_per_lsb"]
         if abs(d) < 3:
@@ -233,14 +233,14 @@ def do_calib(s, a):
     rows, _ = collect(s, a.sec)
     if not rows:
         sys.exit("프레임 없음")
-    key = dict(IL="il", IR="ir", V="v")[a.ch.upper()]
+    key = dict(GP28="gp28", GP27="gp27", V="v")[a.ch.upper()]
     raw = [r[key] for r in rows]
     m, sd = st.fmean(raw), (st.pstdev(raw) if len(raw) > 1 else 0.0)
     if a.ch.upper() == "V":
         scale = a.ref / (m * CFG["v_per_lsb"]) if m else float("nan")
         unit = "V"
     else:
-        z = CFG["zero_il"] if a.ch.upper() == "IL" else CFG["zero_ir"]
+        z = CFG["zero_gp28"] if a.ch.upper() == "GP28" else CFG["zero_gp27"]
         est = (m - z) * CFG["a_per_lsb"]
         scale = a.ref / est if est else float("nan")
         unit = "A"
@@ -260,13 +260,13 @@ def _write_csv(path, rows):
     with open(path, "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["seq", "t_us", "n", "v_raw", "v_lo", "v_hi",
-                    "ir_raw", "ir_lo", "ir_hi", "il_raw", "il_lo", "il_hi", "flags",
-                    "V_bus_V", "I_L_A", "I_R_A", "P_W"])
+                    "gp27_raw", "gp27_lo", "gp27_hi", "gp28_raw", "gp28_lo", "gp28_hi", "flags",
+                    "V_bus_V", "GP28_A", "GP27_A", "P_W"])
         for r in rows:
-            v, il, ir = eng(r)
+            v, i28, i27 = eng(r)
             w.writerow([r["seq"], r["t_us"], r["n"], r["v"], r["v_lo"], r["v_hi"],
-                        r["ir"], r["ir_lo"], r["ir_hi"], r["il"], r["il_lo"], r["il_hi"],
-                        r["flags"], "%.5f" % v, "%.5f" % il, "%.5f" % ir, "%.4f" % (v * (il + ir))])
+                        r["gp27"], r["gp27_lo"], r["gp27_hi"], r["gp28"], r["gp28_lo"], r["gp28_hi"],
+                        r["flags"], "%.5f" % v, "%.5f" % i28, "%.5f" % i27, "%.4f" % (v * (i28 + i27))])
     print("  → %s 저장 (%d 행)" % (path, len(rows)))
 
 
@@ -282,7 +282,7 @@ def main():
     l = sub.add_parser("log");     l.add_argument("--sec", type=float, default=60); l.add_argument("-o", "--out")
     c = sub.add_parser("calib")
     c.add_argument("--ref", type=float, required=True, help="기준기 실측값")
-    c.add_argument("--ch", default="IL", choices=["IL", "IR", "V", "il", "ir", "v"])
+    c.add_argument("--ch", default="GP28", choices=["GP28", "GP27", "V", "gp28", "gp27", "v"])
     c.add_argument("--sec", type=float, default=10)
     c.add_argument("-o", "--out", default="oroha_calib.csv")
 

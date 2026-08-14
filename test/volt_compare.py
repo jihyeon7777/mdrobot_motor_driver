@@ -80,11 +80,11 @@ def main() -> int:
         else cfg.get("v_per_lsb", 9.1312e-3)
     scale_v = cfg.get("scale_v", 1.0)
     a_per_lsb = cfg.get("a_per_lsb", 30.525e-3)
-    zero_il = cfg.get("zero_il", 2048.0)
-    zero_ir = cfg.get("zero_ir", 2048.0)
+    zero_gp28 = cfg.get("zero_gp28", 2048.0)
+    zero_gp27 = cfg.get("zero_gp27", 2048.0)
     print(f"Pico  #CFG  div={cfg.get('div', float('nan')):.4f} "
           f"v_per_lsb={v_per_lsb:.8f} scale_v={scale_v:.4f} "
-          f"zero_il={zero_il:.1f} zero_ir={zero_ir:.1f}")
+          f"zero_gp28={zero_gp28:.1f} zero_gp27={zero_gp27:.1f}")
 
     if args.rate:
         pico.write(f"P{args.rate}\n".encode())
@@ -180,8 +180,8 @@ def main() -> int:
           f"창내극값 [{min(r[4] for r in rows)} … {max(r[5] for r in rows)}]")
     print(f"  전압  평균 {st.mean(volt):8.4f} V  σ {st.pstdev(volt) * 1000:5.1f} mV  "
           f"p-p {(max(volt) - min(volt)) * 1000:.0f} mV")
-    print(f"  동시 전류 I_L {st.mean([(r[7] - zero_il) * a_per_lsb for r in rows]):+.3f} A / "
-          f"I_R {st.mean([(r[6] - zero_ir) * a_per_lsb for r in rows]):+.3f} A")
+    print(f"  동시 전류 GP28 {st.mean([(r[7] - zero_gp28) * a_per_lsb for r in rows]):+.3f} A / "
+          f"GP27 {st.mean([(r[6] - zero_gp27) * a_per_lsb for r in rows]):+.3f} A")
 
     print(f"\n{'=' * 68}\n2. MD400 PID_VOLT_IN(143)\n{'=' * 68}")
     md_mean = {}
@@ -218,7 +218,7 @@ def main() -> int:
         with open(args.out, "w", newline="") as f:
             w = csv.writer(f)
             w.writerow(["host_t", "seq", "t_us", "v_mean", "v_min", "v_max",
-                        "ir_mean", "il_mean", "flags"])
+                        "gp27_mean", "gp28_mean", "flags"])
             w.writerows(rows)
         md_path = args.out.replace(".csv", "_md400.csv")
         with open(md_path, "w", newline="") as f:

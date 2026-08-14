@@ -27,10 +27,10 @@ def generate_launch_description():
                 'v_per_lsb': 9.1312e-3,    # LSB_V × DIV_RATIO 11.3310 (2026-08-13 1 점 적합)
                 'a_per_lsb': 30.52e-3,     # LSB_V ÷ 26.4 mV/A
                 'scale_v': 1.0,            # 교정(C6) 후 갱신
-                'scale_il': 1.0,           # 교정(C4) 후 갱신
-                'scale_ir': 1.0,
-                'sign_il': 1,              # T3 에서 확인
-                'sign_ir': 1,
+                'scale_gp28': 1.0,           # 교정(C4) 후 갱신
+                'scale_gp27': 1.0,
+                'sign_gp28': 1,              # T3 에서 확인
+                'sign_gp27': 1,
                 'design_capacity': 20.0,
                 'cell_count': 7,
             }],

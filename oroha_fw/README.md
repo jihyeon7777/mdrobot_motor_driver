@@ -58,14 +58,14 @@ mpremote connect /dev/ttyACM0 repl     # Ctrl-] 로 나감
 ### 출력 형식
 
 ```
-#COL seq,t_us,n,v_mean,v_min,v_max,ir_mean,ir_min,ir_max,il_mean,il_min,il_max,flags
+#COL seq,t_us,n,v_mean,v_min,v_max,gp27_mean,gp27_min,gp27_max,gp28_mean,gp28_min,gp28_max,flags
 D,412,4120000,32,2607.45,2604,2610,2047.52,2043,2052,2047.48,2043,2052,64
 ```
 
 - **raw 12 bit**를 그대로 보낸다. 환산은 호스트가 한다 → **교정 후 재플래시 불필요.**
 - `t_us`는 **단조 증가** µs (펌웨어에서 랩 처리 완료).
 - `min`/`max`는 창 안의 극값 — 포화·스파이크가 평균에 묻히지 않게.
-- `flags`: b0–2 하한 이탈(V/IR/IL), b3–5 상한 이탈, b6 영점 유효, **b7 overrun**.
+- `flags`: b0–2 하한 이탈(V/GP27/GP28), b3–5 상한 이탈, b6 영점 유효, **b7 overrun**.
 
 > `overrun`이 뜨면 창을 못 채운 것이다. **`P50`으로 출력 주기를 늦춘다.**
 >
@@ -92,7 +92,7 @@ pip install pyserial
 python3 tools/oroha_bench.py --port /dev/ttyACM0 direction
 ```
 
-무부하 → 영점 보정 → 알려진 방전 부하 인가. **방전에서 raw가 올라가면 정방향(SIGN=+1)**, 내려가면 IP 단자가 반대다. 전력 배선을 바꾸거나 펌웨어 `SIGN_I_L`/`SIGN_I_R`을 `-1`로.
+무부하 → 영점 보정 → 알려진 방전 부하 인가. **방전에서 raw가 올라가면 정방향(SIGN=+1)**, 내려가면 IP 단자가 반대다. 전력 배선을 바꾸거나 펌웨어 `SIGN_GP28`/`SIGN_GP27`을 `-1`로.
 
 ### T4 — 무부하 노이즈 RMS
 
@@ -107,7 +107,7 @@ python3 tools/oroha_bench.py --port /dev/ttyACM0 noise --sec 60 -o noise.csv
 
 ```bash
 # 클램프미터로 5.02 A 를 읽고 있는 상태에서
-python3 tools/oroha_bench.py --port /dev/ttyACM0 calib --ref 5.02 --ch IL --sec 10
+python3 tools/oroha_bench.py --port /dev/ttyACM0 calib --ref 5.02 --ch GP28 --sec 10
 # DMM 으로 25.18 V 를 읽고 있는 상태에서
 python3 tools/oroha_bench.py --port /dev/ttyACM0 calib --ref 25.18 --ch V --sec 10
 ```
@@ -140,13 +140,28 @@ source install/setup.bash
 ros2 launch oroha_power power.launch.py port:=/dev/ttyACM0
 ```
 
+### ⚠ 채널 ↔ 바퀴 매핑
+
+**필드와 파라미터 이름은 핀 기준이다.** 좌우로 부르지 않는다 — 이 펌웨어는 로봇을 모르고,
+좌우는 상위 로봇 레이어의 개념이다. 2026-08-14 실측 매핑
+([보고서 §2](../docs/hardware_test_20260814.md)):
+
+| 핀 | 센서 | 슬레이브 | 로봇 기준 |
+|---|---|---|---|
+| **GP28** | #1 | `id=1` | **오른쪽** 바퀴 |
+| **GP27** | #2 | `id=2` | **왼쪽** 바퀴 |
+
+펌웨어 `1.0`까지 GP28을 `I_L`("좌")로 부르던 라벨은 **틀린 것이었다.** `1.1`에서 이름만
+바꿨고 **필드 배치와 값은 그대로**이므로, 기존 로그·bag 데이터는 유효하고 해석만 반대로
+하면 된다. `#CFG fw=` 로 전후를 구분할 수 있다.
+
 ### 토픽
 
 | 토픽 | 타입 | 내용 |
 |---|---|---|
-| `~/measured` | `geometry_msgs/Vector3Stamped` | x=I_L[A] y=I_R[A] **z=V_bus[V]** |
+| `~/measured` | `geometry_msgs/Vector3Stamped` | x=GP28[A] y=GP27[A] **z=V_bus[V]** |
 | `~/raw` | `geometry_msgs/Vector3Stamped` | ADC 평균 raw (환산 전) — 노이즈 분석용 |
-| `~/power` | `geometry_msgs/Vector3Stamped` | x=P_L y=P_R z=P_total [W] |
+| `~/power` | `geometry_msgs/Vector3Stamped` | x=P_GP28 y=P_GP27 z=P_total [W] |
 | `~/battery` | `sensor_msgs/BatteryState` | 10 Hz, 표준 툴 호환 (ROS 규약상 방전이 음수) |
 | `/diagnostics` | `diagnostic_msgs/DiagnosticArray` | 1 Hz — 속도·누락·동기 잔차·플래그 |
 
@@ -159,11 +174,11 @@ ros2 service call /oroha_power/zero std_srvs/srv/Trigger    # 정지 상태에�
 ### 주요 파라미터
 
 ```bash
-ros2 param set /oroha_power scale_il 1.004      # 교정 결과 반영
-ros2 param set /oroha_power sign_ir -1          # T3 에서 부호가 반대였다면
+ros2 param set /oroha_power scale_gp28 1.004     # 교정 결과 반영
+ros2 param set /oroha_power sign_gp27 -1        # T3 에서 부호가 반대였다면
 ```
 
-`v_per_lsb 9.1312e-3` · `a_per_lsb 30.52e-3` · `scale_v/il/ir` · `sign_il/ir` · `zero_il/ir`(펌웨어 `#ZERO`로 자동 갱신) · `port` · `baud` · `auto_start` ·
+`v_per_lsb 9.1312e-3` · `a_per_lsb 30.52e-3` · `scale_v` · `scale_gp28/gp27` · `sign_gp28/gp27` · `zero_gp28/gp27`(펌웨어 `#ZERO`로 자동 갱신) · `port` · `baud` · `auto_start` ·
 `rate`(연결 후 `P<hz>` 로 강제, 기본 50. `0`이면 펌웨어 기본값을 그대로 둔다) · `zero_on_start`.
 
 > ⚠ `v_per_lsb`는 펌웨어 `#CFG`를 **따라가지 않는다.** 노드는 `#ZERO`만 파라미터로 반영하고
@@ -238,7 +253,7 @@ LSB_V  = V_rail / 4095
 |---|---|
 | 프레임이 안 옴 | 포트 확인(`ls /dev/ttyACM*`), 권한(`sudo usermod -aG dialout $USER` 후 재로그인), 펌웨어가 `main.py`로 올라갔는지 |
 | `flags` b7(overrun) 계속 | 창을 못 채움 → `A24` 또는 `P50` |
-| raw가 0 또는 4095 고정 | 배선 끊김 또는 ADC 핀 오배정. GP26=V, GP27=I_R, GP28=I_L |
+| raw가 0 또는 4095 고정 | 배선 끊김 또는 ADC 핀 오배정. GP26=V_bus, GP27=센서#2, GP28=센서#1 |
 | 영점이 2048에서 크게 벗어남 | **VCC를 같이 재라.** 비율 센서라 raw_zero는 레일과 무관하게 2048이어야 한다. 벗어나면 배선·접지 문제 |
 | 노이즈가 100 mA 이상 | 접지 확인 — AGND를 배터리(−)에 직접 물리지 않았는지, 신호선이 모터 상선과 나란하지 않은지, 케이블 ≤0.5 m |
 | ROS2에서 seq_gaps 증가 | USB CDC 버퍼 넘침. `P50`으로 낮추거나 다른 USB 포트 |

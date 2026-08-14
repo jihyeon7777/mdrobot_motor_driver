@@ -8,12 +8,23 @@ OROHA 전류·전압 계측 — Raspberry Pi Pico 벤치 펌웨어 (MicroPython)
 
   ADC 배정
     GP26 (31번) ADC0 : V_bus   모터 버스 전압 (1/11.3310 분압 — 임시 회로, 아래 §전압 채널)
-    GP27 (32번) ADC1 : I_R     전류 우 (센서 #2 OU1)
-    GP28 (34번) ADC2 : I_L     전류 좌 (센서 #1 OU1)
+    GP27 (32번) ADC1 : 전류 센서 #2 (OU1)
+    GP28 (34번) ADC2 : 전류 센서 #1 (OU1)
     33번 AGND        : 계측 단일 노드
     36번 3V3(OUT)    : 센서 VCC ×2
 
-  출력  : USB CDC, 100 Hz, CSV 한 줄
+  ⚠ 채널 이름은 **핀 기준**이다. 좌/우로 부르지 않는다 — 이 펌웨어는 로봇을 모르고,
+    좌우는 상위 로봇 레이어의 개념이다. 1.0 까지는 GP28 을 I_L("좌"), GP27 을 I_R("우")
+    로 불렀는데 **그 라벨은 틀렸다.** 2026-08-14 실측 매핑:
+
+        GP28 ── 전류 센서 #1 ── 슬레이브 id=1 ── 로봇 기준 **오른쪽** 바퀴
+        GP27 ── 전류 센서 #2 ── 슬레이브 id=2 ── 로봇 기준 **왼쪽**   바퀴
+
+    (id=1 만 단독 구동했을 때 GP28 만 +0.231 A 반응하고 GP27 은 -0.000 A.
+     물리 좌/우는 육안 확인. "오른쪽"은 ROS 규약대로 전진 방향 기준.
+     상세: docs/hardware_test_20260814.md)
+
+  출력  : USB CDC, 50 Hz, CSV 한 줄
   명령  : 아래 CMD 표 참조 (개행으로 끝냄)
 
   라이선스: Apache-2.0
@@ -24,7 +35,7 @@ import select
 import time
 from machine import ADC, Pin
 
-FW_VERSION = "oroha-bench-1.0"
+FW_VERSION = "oroha-bench-1.1"
 
 # ══════════════════════════════════════════════════════════════════
 #  as-built 상수  (설계 문서 §13.0 — 실측값)
@@ -52,12 +63,12 @@ SCALE_V    = 1.0                        # 교정 계수 (DMM 대조 후 갱신)
 # 전류 채널 — ACS758LCB-050B @3.3 V, 26.4 mV/A
 SENS_MV_A  = 26.4
 A_PER_LSB  = LSB_V / (SENS_MV_A / 1000.0)   # 30.52 mA
-SCALE_I_L  = 1.0
-SCALE_I_R  = 1.0
+SCALE_GP28  = 1.0
+SCALE_GP27  = 1.0
 
 # 부호 : +1 이면 "방전이 양수". T3 에서 확인 후 필요하면 -1 로.
-SIGN_I_L   = 1
-SIGN_I_R   = 1
+SIGN_GP28   = 1
+SIGN_GP27   = 1
 
 # 선형성 보증 창 (ACS758 ±50 A @3.3 V → 0.33~2.97 V)
 RAW_LIN_LO = 410
@@ -81,10 +92,10 @@ ZERO_N     = 1024       # 영점 보정 샘플 수
 #  하드웨어
 # ══════════════════════════════════════════════════════════════════
 adc_v  = ADC(Pin(26))   # V_bus
-adc_ir = ADC(Pin(27))   # I_R
-adc_il = ADC(Pin(28))   # I_L
-CH = (adc_v, adc_ir, adc_il)
-CH_NAME = ("V", "IR", "IL")
+adc_gp27 = ADC(Pin(27))   # 전류 센서 #2
+adc_gp28 = ADC(Pin(28))   # 전류 센서 #1
+CH = (adc_v, adc_gp27, adc_gp28)
+CH_NAME = ("V", "GP27", "GP28")
 
 led = Pin(25, Pin.OUT)
 
@@ -106,7 +117,8 @@ def rd(a):
 # ══════════════════════════════════════════════════════════════════
 #  상태
 # ══════════════════════════════════════════════════════════════════
-zero = [0.0, 0.0]          # [I_L, I_R] 영점 raw (fractional)
+zero_gp27 = 0.0            # 전류 채널 영점 raw (fractional)
+zero_gp28 = 0.0
 zero_valid = False
 streaming = False
 raw_mode = True            # True: raw 만 전송(호스트가 환산) / False: 환산값도 함께
@@ -170,18 +182,18 @@ def calibrate_zero(n=None):
     """정지 상태에서만 호출. 전류 2채널의 영점 raw 를 구한다.
        ⚠ ACS758 은 비율(ratiometric) 이라 영점이 레일과 무관하게 raw 2048 근처다.
           ACS37030(비-비율)로 바꾸면 여기서 레일 역추정도 해야 한다 — 설계 문서 §3.1.4"""
-    global zero, zero_valid
+    global zero_gp27, zero_gp28, zero_valid
     n = ZERO_N if n is None else n
     s = [0, 0]
     for _ in range(n):
-        adc_ir.read_u16()
-        s[1] += adc_ir.read_u16() >> 4
-        adc_il.read_u16()
-        s[0] += adc_il.read_u16() >> 4
-    zero[0] = s[0] / n
-    zero[1] = s[1] / n
+        adc_gp27.read_u16()
+        s[1] += adc_gp27.read_u16() >> 4
+        adc_gp28.read_u16()
+        s[0] += adc_gp28.read_u16() >> 4
+    zero_gp28 = s[0] / n
+    zero_gp27 = s[1] / n
     zero_valid = True
-    return zero
+    return zero_gp27, zero_gp28
 
 
 def flags_of(vmin, vmax):
@@ -198,11 +210,11 @@ def flags_of(vmin, vmax):
 
 
 def to_eng(mean):
-    """raw 평균 → 공학 단위. (V_bus[V], I_L[A], I_R[A])"""
+    """raw 평균 → 공학 단위. (V_bus[V], GP28[A], GP27[A])"""
     v = mean[0] * V_PER_LSB * SCALE_V
-    il = (mean[2] - zero[0]) * A_PER_LSB * SCALE_I_L * SIGN_I_L
-    ir = (mean[1] - zero[1]) * A_PER_LSB * SCALE_I_R * SIGN_I_R
-    return v, il, ir
+    i28 = (mean[2] - zero_gp28) * A_PER_LSB * SCALE_GP28 * SIGN_GP28
+    i27 = (mean[1] - zero_gp27) * A_PER_LSB * SCALE_GP27 * SIGN_GP27
+    return v, i28, i27
 
 
 def print_config():
@@ -210,16 +222,16 @@ def print_config():
     out("#CFG rate=%d n_rounds=%d n_discard=%d zero_n=%d" % (RATE_HZ, N_ROUNDS, N_DISCARD, ZERO_N))
     out("#CFG vref=%.4f lsb_v=%.8f div=%.4f v_per_lsb=%.6f scale_v=%.6f"
         % (VREF_NOM, LSB_V, DIV_RATIO, V_PER_LSB, SCALE_V))
-    out("#CFG sens_mv_a=%.2f a_per_lsb=%.6f scale_il=%.6f scale_ir=%.6f"
-        % (SENS_MV_A, A_PER_LSB, SCALE_I_L, SCALE_I_R))
-    out("#CFG sign_il=%d sign_ir=%d lin_lo=%d lin_hi=%d" % (SIGN_I_L, SIGN_I_R, RAW_LIN_LO, RAW_LIN_HI))
-    out("#CFG zero_il=%.3f zero_ir=%.3f valid=%d" % (zero[0], zero[1], 1 if zero_valid else 0))
-    out("#CFG ch: GP26=V_bus GP27=I_R GP28=I_L  agnd=pin33  3v3=pin36")
+    out("#CFG sens_mv_a=%.2f a_per_lsb=%.6f scale_gp28=%.6f scale_gp27=%.6f"
+        % (SENS_MV_A, A_PER_LSB, SCALE_GP28, SCALE_GP27))
+    out("#CFG sign_gp28=%d sign_gp27=%d lin_lo=%d lin_hi=%d" % (SIGN_GP28, SIGN_GP27, RAW_LIN_LO, RAW_LIN_HI))
+    out("#CFG zero_gp28=%.3f zero_gp27=%.3f valid=%d" % (zero_gp28, zero_gp27, 1 if zero_valid else 0))
+    out("#CFG ch: GP26=V_bus GP27=sensor#2 GP28=sensor#1  agnd=pin33  3v3=pin36")
 
 
 def print_header():
     out("#OROHA %s  rate=%d n=%d" % (FW_VERSION, RATE_HZ, N_ROUNDS))
-    out("#COL seq,t_us,n,v_mean,v_min,v_max,ir_mean,ir_min,ir_max,il_mean,il_min,il_max,flags")
+    out("#COL seq,t_us,n,v_mean,v_min,v_max,gp27_mean,gp27_min,gp27_max,gp28_mean,gp28_min,gp28_max,flags")
 
 
 HELP = (
@@ -276,15 +288,15 @@ def handle(line):
         was = streaming
         streaming = False
         z = calibrate_zero()
-        out("#ZERO il=%.3f ir=%.3f n=%d" % (z[0], z[1], ZERO_N))
+        out("#ZERO gp28=%.3f gp27=%.3f n=%d" % (z[1], z[0], ZERO_N))
         streaming = was
     elif c == "C":
         print_config()
     elif c == "V":
         m, lo, hi, dt = sample_window()
-        v, il, ir = to_eng(m)
-        out("#VAL V_bus=%.4f V  I_L=%+.4f A  I_R=%+.4f A  P=%.3f W  (raw %.1f/%.1f/%.1f, %d us)"
-            % (v, il, ir, v * (il + ir), m[0], m[2], m[1], dt))
+        v, i28, i27 = to_eng(m)
+        out("#VAL V_bus=%.4f V  GP28=%+.4f A  GP27=%+.4f A  P=%.3f W  (raw %.1f/%.1f/%.1f, %d us)"
+            % (v, i28, i27, v * (i28 + i27), m[0], m[2], m[1], dt))
     elif c == "R":
         raw_mode = not raw_mode
         out("#RAW %d" % (1 if raw_mode else 0))
@@ -338,7 +350,7 @@ else:
 
 # 부팅 시 1회 영점 보정 — 정지 상태 가정
 calibrate_zero(256)
-out("#ZERO il=%.3f ir=%.3f n=256 (boot)" % (zero[0], zero[1]))
+out("#ZERO gp28=%.3f gp27=%.3f n=256 (boot)" % (zero_gp28, zero_gp27))
 
 if streaming:
     print_header()
@@ -373,8 +385,8 @@ while True:
                m[2], lo[2], hi[2],
                f))
     else:
-        v, il, ir = to_eng(m)
-        out("E,%d,%d,%.4f,%+.4f,%+.4f,%.3f,%d" % (seq, t_us, v, il, ir, v * (il + ir), f))
+        v, i28, i27 = to_eng(m)
+        out("E,%d,%d,%.4f,%+.4f,%+.4f,%.3f,%d" % (seq, t_us, v, i28, i27, v * (i28 + i27), f))
 
     seq += 1
     blink += 1

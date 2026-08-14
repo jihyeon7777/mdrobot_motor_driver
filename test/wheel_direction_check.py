@@ -6,7 +6,7 @@
 
 무엇을 확인하는가
   1. 어느 **물리 바퀴**가 도는가            → 눈으로 확인 (이 스크립트가 판단하지 않는다)
-  2. 어느 **전류 채널**이 반응하는가        → GP28(I_L) / GP27(I_R) 중 어느 쪽이 올라가는가
+  2. 어느 **전류 채널**이 반응하는가        → GP28 / GP27 중 어느 쪽이 올라가는가
   3. **부호 규약**이 맞는가                 → +rpm 이 위치 증가(CCW) 방향인가
   4. DMM(급전선 직렬) 기준 전류            → 정지 baseline 을 빼면 그 유닛의 모터 전류
 
@@ -56,7 +56,7 @@ class Pico(threading.Thread):
     def __init__(self) -> None:
         super().__init__(daemon=True)
         self.rows: list[tuple] = []
-        self.zero = (2048.0, 2048.0)      # (il, ir)
+        self.zero = (2048.0, 2048.0)      # (gp28, gp27)
         self.ok = False
         self.running = True
         self.sp = None
@@ -67,15 +67,15 @@ class Pico(threading.Thread):
             self.sp.write(b"C\n")
             self.sp.flush()
             time.sleep(0.5)
-            il = ir = None
+            i28 = i27 = None
             for ln in self.sp.read(8192).decode("utf-8", "replace").splitlines():
                 for tok in ln.split():
-                    if tok.startswith("zero_il="):
-                        il = float(tok[8:])
-                    elif tok.startswith("zero_ir="):
-                        ir = float(tok[8:])
-            if il and ir:
-                self.zero = (il, ir)
+                    if tok.startswith("zero_gp28="):
+                        i28 = float(tok[10:])
+                    elif tok.startswith("zero_gp27="):
+                        i27 = float(tok[10:])
+            if i28 and i27:
+                self.zero = (i28, i27)
             self.sp.reset_input_buffer()
             self.sp.write(b"S\n")
             self.sp.flush()
@@ -103,7 +103,7 @@ class Pico(threading.Thread):
                 p = s.split(",")
                 if len(p) != 14:
                     continue
-                try:                                   # t, il, ir
+                try:                                   # t, gp28, gp27
                     self.rows.append((time.time(), float(p[10]), float(p[7])))
                 except ValueError:
                     pass
@@ -112,9 +112,9 @@ class Pico(threading.Thread):
         sel = [r for r in self.rows if t0 <= r[0] <= t1]
         if not sel:
             return float("nan"), float("nan"), 0
-        il = st.mean([(r[1] - self.zero[0]) * A_PER_LSB for r in sel])
-        ir = st.mean([(r[2] - self.zero[1]) * A_PER_LSB for r in sel])
-        return il, ir, len(sel)
+        i28 = st.mean([(r[1] - self.zero[0]) * A_PER_LSB for r in sel])
+        i27 = st.mean([(r[2] - self.zero[1]) * A_PER_LSB for r in sel])
+        return i28, i27, len(sel)
 
     def shutdown(self) -> None:
         self.running = False
@@ -155,17 +155,17 @@ def phase(name: str, drv, pico, rpm_cmd: int, dwell: float,
         time.sleep(0.25)
     t1 = time.time()
 
-    il, ir, n = pico.window(t0 + 0.5, t1)
+    i28, i27, n = pico.window(t0 + 0.5, t1)
     spd = st.mean([s[0] for s in samples]) if samples else float("nan")
     cur = st.mean([s[1] for s in samples]) if samples else float("nan")
     dpos = (samples[-1][2] - samples[0][2]) if len(samples) > 1 else 0
 
     print(f"  {name:<22} 지령 {rpm_cmd:>+5} rpm │ 실측 {spd:>+7.1f} rpm │ "
           f"위치Δ {dpos:>+8} │ 내장계 {cur:>+6.2f} A │ "
-          f"I_L {il:>+7.3f} A  I_R {ir:>+7.3f} A  (pico n={n})")
+          f"GP28 {i28:>+7.3f} A  GP27 {i27:>+7.3f} A  (pico n={n})")
     rows.append(dict(phase=name, rpm_cmd=rpm_cmd, rpm_meas="%.1f" % spd,
                      dpos=dpos, md_current="%.2f" % cur,
-                     il_a="%.4f" % il, ir_a="%.4f" % ir, n_pico=n,
+                     gp28_a="%.4f" % i28, gp27_a="%.4f" % i27, n_pico=n,
                      n_md=len(samples), t0="%.3f" % t0, t1="%.3f" % t1))
 
 
@@ -261,14 +261,14 @@ def main() -> int:
         print("=" * 74)
         base = next((r for r in rows if r["phase"] == "0.정지"), None)
         for r in run:
-            il = float(r["il_a"]); ir = float(r["ir_a"])
+            i28 = float(r["gp28_a"]); i27 = float(r["gp27_a"])
             if base:
-                il -= float(base["il_a"]); ir -= float(base["ir_a"])
-            ch = "GP28(I_L)" if abs(il) > abs(ir) else "GP27(I_R)"
+                i28 -= float(base["gp28_a"]); i27 -= float(base["gp27_a"])
+            ch = "GP28 (id=1, 우)" if abs(i28) > abs(i27) else "GP27 (id=2, 좌)"
             print(f"  {r['phase']:<12} 위치Δ {int(r['dpos']):>+9} → "
                   f"{'증가(CCW,+ 규약 일치)' if int(r['dpos']) > 0 else '감소(CW)'}"
-                  f" │ 반응 채널 {ch}  (ΔI_L {il:+.3f} / ΔI_R {ir:+.3f} A)")
-        print(f"\n  → 기존 문서의 매핑은 GP28 = id 1 (I_L), GP27 = id 2 (I_R) 이다.")
+                  f" │ 반응 채널 {ch}  (ΔGP28 {i28:+.3f} / ΔGP27 {i27:+.3f} A)")
+        print(f"\n  → 2026-08-14 확정 매핑: GP28 = id 1 = 로봇 기준 우, GP27 = id 2 = 좌.")
         print(f"  → 물리 좌/우는 눈으로 본 것이 기준이다. 이 스크립트는 판단하지 않는다.")
 
     if args.out and rows:

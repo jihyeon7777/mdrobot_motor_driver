@@ -6,11 +6,19 @@ OROHA 전류·전압 계측 ROS2 노드 — Pico(USB CDC) → ROS2
   커스텀 메시지 없음. 표준 메시지만 쓴다 (빌드할 msg 패키지 불필요).
 
   퍼블리시
-    ~/measured   geometry_msgs/Vector3Stamped   x=I_L[A]  y=I_R[A]  z=V_bus[V]
-    ~/raw        geometry_msgs/Vector3Stamped   x=IL_raw  y=IR_raw  z=V_raw   (ADC 평균, 환산 전)
-    ~/power      geometry_msgs/Vector3Stamped   x=P_L[W]  y=P_R[W]  z=P_tot[W]
+    ~/measured   geometry_msgs/Vector3Stamped   x=GP28[A]     y=GP27[A]     z=V_bus[V]
+    ~/raw        geometry_msgs/Vector3Stamped   x=GP28_raw    y=GP27_raw    z=V_raw  (ADC 평균, 환산 전)
+    ~/power      geometry_msgs/Vector3Stamped   x=P_GP28[W]   y=P_GP27[W]   z=P_tot[W]
+
     ~/battery    sensor_msgs/BatteryState       (10 Hz, 표준 툴 호환)
     /diagnostics diagnostic_msgs/DiagnosticArray (1 Hz)
+
+  ⚠ 필드는 **핀 기준**이다. 2026-08-14 실측 매핑 (docs/hardware_test_20260814.md):
+        GP28 = 센서 #1 = 슬레이브 id=1 = 로봇 기준 **오른쪽** 바퀴
+        GP27 = 센서 #2 = 슬레이브 id=2 = 로봇 기준 **왼쪽**   바퀴
+    1.0 까지 GP28 을 I_L("좌")로 부르던 라벨은 틀린 것이었다. **필드 배치는 안 바꿨다** —
+    x 는 예나 지금이나 GP28 이고, 바뀐 것은 이름뿐이다. 기존 bag 의 데이터는 그대로
+    유효하고 해석만 반대로 하면 된다.
 
   서비스
     ~/zero       std_srvs/Trigger   정지 상태 영점 보정
@@ -39,8 +47,8 @@ try:
 except ImportError:
     raise SystemExit("pyserial 이 필요합니다:  pip install pyserial  (또는 apt install python3-serial)")
 
-FLAG_NAMES = {0: "v_under", 1: "ir_under", 2: "il_under",
-              3: "v_over", 4: "ir_over", 5: "il_over",
+FLAG_NAMES = {0: "v_under", 1: "gp27_under", 2: "gp28_under",
+              3: "v_over", 4: "gp27_over", 5: "gp28_over",
               6: "zero_valid", 7: "overrun"}
 
 
@@ -66,12 +74,12 @@ class OrohaPowerNode(Node):
         d("v_per_lsb", 9.1312e-3)      # LSB_V × DIV_RATIO(11.3310) — 2026-08-13 28.8 V 1 점 적합
         d("a_per_lsb", 30.52e-3)       # LSB_V ÷ 26.4 mV/A
         d("scale_v", 1.0)
-        d("scale_il", 1.0)
-        d("scale_ir", 1.0)
-        d("sign_il", 1)
-        d("sign_ir", 1)
-        d("zero_il", 2048.0)           # 펌웨어 #ZERO 로 갱신됨
-        d("zero_ir", 2048.0)
+        d("scale_gp28", 1.0)
+        d("scale_gp27", 1.0)
+        d("sign_gp28", 1)
+        d("sign_gp27", 1)
+        d("zero_gp28", 2048.0)           # 펌웨어 #ZERO 로 갱신됨
+        d("zero_gp27", 2048.0)
         d("design_capacity", 20.0)     # Ah — BatteryState 용
         d("cell_count", 7)
 
@@ -193,12 +201,12 @@ class OrohaPowerNode(Node):
             self.get_logger().info(line)
             self._zero_reply = line
             for tok in line.split():
-                if tok.startswith("il="):
+                if tok.startswith("gp28="):
                     self.set_parameters([rclpy.parameter.Parameter(
-                        "zero_il", rclpy.Parameter.Type.DOUBLE, float(tok[3:]))])
-                elif tok.startswith("ir="):
+                        "zero_gp28", rclpy.Parameter.Type.DOUBLE, float(tok[5:]))])
+                elif tok.startswith("gp27="):
                     self.set_parameters([rclpy.parameter.Parameter(
-                        "zero_ir", rclpy.Parameter.Type.DOUBLE, float(tok[3:]))])
+                        "zero_gp27", rclpy.Parameter.Type.DOUBLE, float(tok[5:]))])
         elif line.startswith("#CFG") or line.startswith("#WARN") or line.startswith("#ERR"):
             self.get_logger().info(line)
 
@@ -210,8 +218,8 @@ class OrohaPowerNode(Node):
         try:
             return dict(seq=int(p[1]), t_us=int(p[2]), n=int(p[3]),
                         v=float(p[4]), v_lo=int(p[5]), v_hi=int(p[6]),
-                        ir=float(p[7]), ir_lo=int(p[8]), ir_hi=int(p[9]),
-                        il=float(p[10]), il_lo=int(p[11]), il_hi=int(p[12]),
+                        gp27=float(p[7]), gp27_lo=int(p[8]), gp27_hi=int(p[9]),
+                        gp28=float(p[10]), gp28_lo=int(p[11]), gp28_hi=int(p[12]),
                         flags=int(p[13]))
         except ValueError:
             return None
@@ -243,26 +251,26 @@ class OrohaPowerNode(Node):
         stamp = rclpy.time.Time(seconds=int(t), nanoseconds=int((t % 1) * 1e9)).to_msg()
 
         v = f["v"] * self.p("v_per_lsb") * self.p("scale_v")
-        il = (f["il"] - self.p("zero_il")) * self.p("a_per_lsb") * self.p("scale_il") * self.p("sign_il")
-        ir = (f["ir"] - self.p("zero_ir")) * self.p("a_per_lsb") * self.p("scale_ir") * self.p("sign_ir")
+        i28 = (f["gp28"] - self.p("zero_gp28")) * self.p("a_per_lsb") * self.p("scale_gp28") * self.p("sign_gp28")
+        i27 = (f["gp27"] - self.p("zero_gp27")) * self.p("a_per_lsb") * self.p("scale_gp27") * self.p("sign_gp27")
 
         m = Vector3Stamped()
         m.header.stamp = stamp
         m.header.frame_id = self.frame_id
-        m.vector.x, m.vector.y, m.vector.z = il, ir, v
+        m.vector.x, m.vector.y, m.vector.z = i28, i27, v
         self.pub_meas.publish(m)
 
         r = Vector3Stamped()
         r.header = m.header
-        r.vector.x, r.vector.y, r.vector.z = f["il"], f["ir"], f["v"]
+        r.vector.x, r.vector.y, r.vector.z = f["gp28"], f["gp27"], f["v"]
         self.pub_raw.publish(r)
 
         w = Vector3Stamped()
         w.header = m.header
-        w.vector.x, w.vector.y, w.vector.z = v * il, v * ir, v * (il + ir)
+        w.vector.x, w.vector.y, w.vector.z = v * i28, v * i27, v * (i28 + i27)
         self.pub_pow.publish(w)
 
-        self.last = dict(t=t, resid=resid, v=v, il=il, ir=ir, f=f)
+        self.last = dict(t=t, resid=resid, v=v, i28=i28, i27=i27, f=f)
 
     def pub_battery(self):
         if not self.last:
@@ -271,7 +279,7 @@ class OrohaPowerNode(Node):
         b.header.stamp = self.get_clock().now().to_msg()
         b.header.frame_id = self.frame_id
         b.voltage = float(self.last["v"])
-        b.current = float(-(self.last["il"] + self.last["ir"]))   # ROS 규약: 방전이 음수
+        b.current = float(-(self.last["i28"] + self.last["i27"]))   # ROS 규약: 방전이 음수
         b.charge = float("nan")
         b.capacity = float("nan")
         b.design_capacity = float(self.p("design_capacity"))
@@ -315,13 +323,13 @@ class OrohaPowerNode(Node):
             kv(KeyValue(key="sync_residual_ms", value="%.2f" % (self.last["resid"] * 1e3)))
             kv(KeyValue(key="sync_window", value=str(len(self.delta))))
             kv(KeyValue(key="V_bus", value="%.4f V" % self.last["v"]))
-            kv(KeyValue(key="I_L", value="%+.4f A" % self.last["il"]))
-            kv(KeyValue(key="I_R", value="%+.4f A" % self.last["ir"]))
+            kv(KeyValue(key="GP28(우)", value="%+.4f A" % self.last["i28"]))
+            kv(KeyValue(key="GP27(좌)", value="%+.4f A" % self.last["i27"]))
             kv(KeyValue(key="P_total", value="%.3f W" % (self.last["v"] *
-                                                         (self.last["il"] + self.last["ir"]))))
-            kv(KeyValue(key="raw_V/IR/IL", value="%.1f / %.1f / %.1f" % (f["v"], f["ir"], f["il"])))
+                                                         (self.last["i28"] + self.last["i27"]))))
+            kv(KeyValue(key="raw_V/GP27/GP28", value="%.1f / %.1f / %.1f" % (f["v"], f["gp27"], f["gp28"])))
             kv(KeyValue(key="flags_seen", value=",".join(names) if names else "-"))
-            kv(KeyValue(key="zero_il/ir", value="%.2f / %.2f" % (self.p("zero_il"), self.p("zero_ir"))))
+            kv(KeyValue(key="zero_gp28/gp27", value="%.2f / %.2f" % (self.p("zero_gp28"), self.p("zero_gp27"))))
 
         arr = DiagnosticArray()
         arr.header.stamp = self.get_clock().now().to_msg()
