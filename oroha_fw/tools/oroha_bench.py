@@ -28,8 +28,9 @@ except ImportError:
 
 # as-built 상수 (설계 문서 §13.0) — 펌웨어 #CFG 로 덮어쓴다
 # v_per_lsb 는 2026-08-13 에 28.8 V 1 점 적합으로 갱신됨 (DIV_RATIO 11.9929 → 11.3310)
-CFG = dict(v_per_lsb=9.1312e-3, a_per_lsb=30.52e-3, scale_v=1.0,
-           scale_gp28=1.0, scale_gp27=1.0, sign_gp28=1, sign_gp27=1,
+# a_per_lsb 는 ACS37030(66 mV/A) 기준. 2026-08-14 DMM 교정으로 scale_gp28=0.9852
+CFG = dict(v_per_lsb=9.1312e-3, a_per_lsb=12.21e-3, scale_v=1.0,
+           scale_gp28=0.9852, scale_gp27=1.0, sign_gp28=1, sign_gp27=1,
            zero_gp28=2048.0, zero_gp27=2048.0, lin_lo=410, lin_hi=3686)
 
 FLAG = {0: "V<lo", 1: "GP27<lo", 2: "GP28<lo", 3: "V>hi", 4: "GP27>hi", 5: "GP28>hi",
@@ -146,7 +147,7 @@ def do_monitor(s, a):
 
 
 def do_noise(s, a):
-    """T4 — 무부하 노이즈 RMS. 목표 < 30 mA (as-built 1 LSB = 30.52 mA)"""
+    """T4 — 무부하 노이즈 RMS. 목표 < 30 mA (1 LSB = 12.03 mA — ACS37030 실측 교정)"""
     read_cfg(s)
     print("T4 무부하 노이즈 측정 — 모터 정지·차단기 상태 그대로 %d 초" % a.sec)
     print("먼저 영점 보정...")
@@ -175,7 +176,7 @@ def do_noise(s, a):
         v = b["sd_eng"] * 1000
         ok = "✅ 통과" if v < 30 else "⚠ 30 mA 초과"
         print("  %-5s 노이즈 %6.1f mA RMS  (= %.2f LSB)   %s" % (b["name"], v, b["sd_raw"], ok))
-    print("  ※ as-built 1 LSB = %.2f mA — σ 가 1 LSB 이하면 양자화가 지배한다는 뜻" % (lsb_i * 1000))
+    print("  ※ 1 LSB = %.2f mA — σ 가 1 LSB 이하면 양자화가 지배한다는 뜻" % (lsb_i * 1000))
     fl = 0
     for r in rows:
         fl |= r["flags"]

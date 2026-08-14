@@ -176,7 +176,7 @@ def sample(point: int, t0: float, args) -> tuple[dict, list[tuple]]:
     lsb_v = cfg.get("lsb_v", 3.3 / 4095)
     v_per_lsb = lsb_v * div if div else cfg.get("v_per_lsb", 9.1312e-3)
     scale_v = cfg.get("scale_v", 1.0)
-    a_per_lsb = cfg.get("a_per_lsb", 30.525e-3)
+    a_per_lsb = cfg.get("a_per_lsb", 12.029e-3)
     zero_gp28 = cfg.get("zero_gp28", 2048.0)
     zero_gp27 = cfg.get("zero_gp27", 2048.0)
 

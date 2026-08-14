@@ -35,8 +35,11 @@ from mdrobot.status import DI_BIT_NAMES, active_bits  # noqa: E402
 MD_PORT = "/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_BG043HTG-if00-port0"
 PICO_PORT = "/dev/serial/by-id/usb-MicroPython_Board_in_FS_mode_e6616408435d4437-if00"
 
-ADC_MID, AMPS_FULL = 2047.5, 20.0
-LSB_A = AMPS_FULL / ADC_MID
+ADC_MID = 2047.5
+# 2026-08-14 DMM 15 점 교정 (보고서 20260814 §7). 이전 값 AMPS_FULL/ADC_MID =
+# 9.768 mA/LSB 는 18.8% 낮았다 — 이 스크립트로 낸 8/09·8/11·8/12 의 전류
+# 절대값은 모두 23.1% 낮게 적혀 있다. 상대 비교(좌우 비 등)는 영향 없다.
+LSB_A = 12.0289e-3
 BIT_START_STOP = 4
 IDS = (1, 2)
 

@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""ACS758 절대 교정 (조치 #4) — DMM 을 기준으로 raw 카운트를 직접 교정한다.
+"""ACS37030 절대 교정 (조치 #4) — DMM 을 기준으로 raw 카운트를 직접 교정한다.
 
 ⚠ **모터가 실제로 돈다.** 한 유닛만 구동하고 반대쪽은 `torque_off`.
 ⚠ 각 속도점에서 **DMM 값 입력을 기다린다.** 직접 실행할 것 (Claude 가 대신 못 읽는다).
 
 전제
-  DMM 이 해당 컨트롤러의 DC 급전 분기에 직렬로 들어가 있고, ACS758 도 같은 경로에 있다.
+  DMM 이 해당 컨트롤러의 DC 급전 분기에 직렬로 들어가 있고, 전류센서도 같은 경로에 있다.
   둘이 같은 전류를 보므로 직접 대조가 성립한다.
 
 왜 raw 로 회귀하는가
   `DMM 전류` 를 **raw ADC 카운트**에 회귀시킨다. 파생 전류값이 아니다. 그래서
   `Z`(영점 보정) 시점도, `zero_gp27/28` 도, 기존 `a_per_lsb` 도 결과에 영향을 주지 않는다.
-      기울기      → 참 A/LSB      (공칭 30.525 mA/LSB 와 대조)
+      기울기      → 참 A/LSB      (2026-08-14 결과 12.0289 mA/LSB)
       x 절편      → 0 A 일 때의 raw (공칭 2047.5 와 대조 = 절대 영점 오차)
 
 DMM 설정
@@ -55,7 +55,7 @@ FTDI = BY_ID / "usb-FTDI_FT232R_USB_UART_BG043HTG-if00-port0"
 PICO = BY_ID / "usb-MicroPython_Board_in_FS_mode_e6616408435d4437-if00"
 
 RAMP_STEP, RAMP_DT = 200, 0.30      # 667 rpm/s — 기존 관례
-A_PER_LSB_NOM = 30.525e-3
+A_PER_LSB_NOM = 12.210e-3   # ACS37030 공칭 (66 mV/A)
 ADC_MID = 2047.5
 
 # id → (전류 채널 이름, D 행에서의 필드 위치)
@@ -166,7 +166,7 @@ def main() -> int:
     ch_name, _ = CH_OF_ID[args.id]
 
     print("=" * 76)
-    print(f"ACS758 절대 교정 — id={args.id} ({ch_name}), id={other} 는 torque_off")
+    print(f"ACS37030 절대 교정 — id={args.id} ({ch_name}), id={other} 는 torque_off")
     print(f"⚠ 모터가 돈다. {len(plan)} 점, 점당 {args.dwell:.0f} s + DMM 입력 대기")
     print(f"  순서: {plan}")
     print("=" * 76)

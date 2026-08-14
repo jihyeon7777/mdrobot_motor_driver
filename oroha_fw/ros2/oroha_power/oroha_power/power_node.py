@@ -72,10 +72,12 @@ class OrohaPowerNode(Node):
         # as-built 상수 (설계 문서 §13.0). 교정 후 여기만 고치면 된다.
         # ⚠ 이 노드는 펌웨어 #CFG 를 무시한다(_meta 는 로깅만). 펌웨어 상수를 바꾸면 여기도 같이.
         d("v_per_lsb", 9.1312e-3)      # LSB_V × DIV_RATIO(11.3310) — 2026-08-13 28.8 V 1 점 적합
-        d("a_per_lsb", 30.52e-3)       # LSB_V ÷ 26.4 mV/A
+        # ACS37030LLZATR-020B3 (±20 A, 3.3 V, 66 mV/A, 비-비율). 1.0 까지 ACS758
+        # (26.4 mV/A)로 잘못 적혀 있어 2.54 배 과대했다 — 보고서 20260814 §7.
+        d("a_per_lsb", 12.21e-3)       # LSB_V ÷ 66.0 mV/A (공칭)
         d("scale_v", 1.0)
-        d("scale_gp28", 1.0)
-        d("scale_gp27", 1.0)
+        d("scale_gp28", 0.9852)   # 2026-08-14 DMM 15 점 교정 → 실효 12.029 mA/LSB
+        d("scale_gp27", 1.0)      # 미교정 — id=2 를 아직 구동한 적이 없다
         d("sign_gp28", 1)
         d("sign_gp27", 1)
         d("zero_gp28", 2048.0)           # 펌웨어 #ZERO 로 갱신됨

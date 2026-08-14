@@ -79,7 +79,7 @@ def main() -> int:
     v_per_lsb = cfg.get("lsb_v", 3.3 / 4095) * cfg["div"] if "div" in cfg \
         else cfg.get("v_per_lsb", 9.1312e-3)
     scale_v = cfg.get("scale_v", 1.0)
-    a_per_lsb = cfg.get("a_per_lsb", 30.525e-3)
+    a_per_lsb = cfg.get("a_per_lsb", 12.029e-3)
     zero_gp28 = cfg.get("zero_gp28", 2048.0)
     zero_gp27 = cfg.get("zero_gp27", 2048.0)
     print(f"Pico  #CFG  div={cfg.get('div', float('nan')):.4f} "

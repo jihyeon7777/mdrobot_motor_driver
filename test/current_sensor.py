@@ -2,7 +2,7 @@
 current_sensor.py  — OROHA v2 Phase 5
 Raspberry Pi Pico (MicroPython)
 
-ACS758 전류센서 2개의 raw ADC 값을 20Hz로 시리얼(USB) 전송.
+전류센서 2개(ACS37030)의 raw ADC 값을 20Hz로 시리얼(USB) 전송.
 출력 형식 (한 줄에 하나):
     <센서1_raw>,<센서2_raw>
 예:

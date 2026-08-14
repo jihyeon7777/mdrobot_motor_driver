@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 current_sensor_node.py — OROHA v2 Phase 5
-Pico(ACS758 2채널)의 시리얼 CSV 출력을 읽어 ROS2 토픽으로 발행.
+Pico(전류센서 2채널)의 시리얼 CSV 출력을 읽어 ROS2 토픽으로 발행.
 
 입력  : /dev/ttyACM0 로 들어오는  "<raw1>,<raw2>\n"  (Pico main.py, 20Hz)
 발행  : /current_raw  (std_msgs/Int32MultiArray, data=[raw1, raw2])
