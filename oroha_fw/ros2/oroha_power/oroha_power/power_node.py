@@ -85,6 +85,10 @@ class OrohaPowerNode(Node):
         # 맞고 절대 전류에는 아니다.
         d("zero_gp28", 2060.63)
         d("zero_gp27", 2064.31)
+        # 펌웨어가 영점에서 역산한 레일 보정 계수 (조치 #18). #ZERO 로 갱신된다.
+        # ACS37030 이 비-비율이라 레일이 흔들리면 게인과 영점이 같이 움직인다 —
+        # 레일 1% 면 전류 248 mA 다. 1.0 이면 2026-08-14 교정 시점과 같은 레일.
+        d("rail_corr", 1.0)
         d("design_capacity", 20.0)     # Ah — BatteryState 용
         d("cell_count", 7)
 
@@ -206,7 +210,13 @@ class OrohaPowerNode(Node):
             self.get_logger().info(line)
             self._zero_reply = line
             for tok in line.split():
-                if tok.startswith("gp28="):
+                if tok.startswith("rail_corr="):
+                    try:
+                        self.set_parameters([rclpy.parameter.Parameter(
+                            "rail_corr", rclpy.Parameter.Type.DOUBLE, float(tok[10:]))])
+                    except ValueError:
+                        pass
+                elif tok.startswith("gp28="):
                     self.set_parameters([rclpy.parameter.Parameter(
                         "zero_gp28", rclpy.Parameter.Type.DOUBLE, float(tok[5:]))])
                 elif tok.startswith("gp27="):
@@ -255,9 +265,10 @@ class OrohaPowerNode(Node):
         t, resid = self.stamp_of(f)
         stamp = rclpy.time.Time(seconds=int(t), nanoseconds=int((t % 1) * 1e9)).to_msg()
 
-        v = f["v"] * self.p("v_per_lsb") * self.p("scale_v")
-        i28 = (f["gp28"] - self.p("zero_gp28")) * self.p("a_per_lsb") * self.p("scale_gp28") * self.p("sign_gp28")
-        i27 = (f["gp27"] - self.p("zero_gp27")) * self.p("a_per_lsb") * self.p("scale_gp27") * self.p("sign_gp27")
+        rc = float(self.p("rail_corr"))
+        v = f["v"] * self.p("v_per_lsb") * self.p("scale_v") * rc
+        i28 = (f["gp28"] - self.p("zero_gp28")) * self.p("a_per_lsb") * self.p("scale_gp28") * self.p("sign_gp28") * rc
+        i27 = (f["gp27"] - self.p("zero_gp27")) * self.p("a_per_lsb") * self.p("scale_gp27") * self.p("sign_gp27") * rc
 
         m = Vector3Stamped()
         m.header.stamp = stamp
@@ -335,6 +346,7 @@ class OrohaPowerNode(Node):
             kv(KeyValue(key="raw_V/GP27/GP28", value="%.1f / %.1f / %.1f" % (f["v"], f["gp27"], f["gp28"])))
             kv(KeyValue(key="flags_seen", value=",".join(names) if names else "-"))
             kv(KeyValue(key="zero_gp28/gp27", value="%.2f / %.2f" % (self.p("zero_gp28"), self.p("zero_gp27"))))
+            kv(KeyValue(key="rail_corr", value="%.6f" % self.p("rail_corr")))
 
         arr = DiagnosticArray()
         arr.header.stamp = self.get_clock().now().to_msg()

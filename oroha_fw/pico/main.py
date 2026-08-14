@@ -71,9 +71,7 @@ SCALE_V    = 1.0                        # 교정 계수 (DMM 대조 후 갱신)
 #   비-비율이라는 점이 중요하다. ACS758 은 영점이 VCC/2 라 레일과 함께 움직이지만,
 #   ACS37030 은 **1.65 V 고정**이다. 그래서
 #     · 레일이 흔들리면 영점이 raw 상에서 이동한다 (3% → 64 LSB ≈ 0.77 A)
-#     · 거꾸로 영점에서 레일을 역추정할 수 있다 — README §5, 아직 구현 안 함 (조치 #18)
-#         V_rail = 1.650 * 4095 / raw_zero
-#       2026-08-14 실측 raw_zero 2060.63 → V_rail ≈ 3.279 V (공칭 3.3 보다 0.6% 낮다)
+#     · 거꾸로 영점에서 레일을 역추정할 수 있다 — 아래 §레일 역추정에서 구현 (조치 #18)
 SENS_MV_A  = 66.0                           # ACS37030 데이터시트 (3.3 V)
 A_PER_LSB  = LSB_V / (SENS_MV_A / 1000.0)   # 12.210 mA — 공칭
 
@@ -93,6 +91,27 @@ SCALE_GP27 = 0.9544
 #     배선을 고치려면 센서 #2 의 IP+/IP− 를 바꿔 달고 이 값을 +1 로 되돌린다.
 SIGN_GP28   = 1
 SIGN_GP27   = -1
+
+# ══════════════════════════════════════════════════════════════════
+#  레일 역추정 (조치 #18)
+# ══════════════════════════════════════════════════════════════════
+#  ACS37030 은 비-비율이라 무전류 출력이 **1.65 V 고정**이다. 그러면 raw 상의 영점은
+#  레일에 반비례하고, 거꾸로 영점에서 레일을 구할 수 있다 (README §5):
+#
+#       V_rail = 1.650 × 4095 / raw_zero
+#
+#  이게 왜 필요한가 — 비-비율 센서는 **게인도 레일에 비례**한다 (A/LSB = VREF/(4095·S)).
+#  비율 센서(ACS758)라면 LSB_V 와 감도가 같이 움직여 상쇄되지만 이 부품은 아니다.
+#  레일이 1% 흔들리면 영점이 20.6 LSB, 전류로 **248 mA** 움직인다 — 500 rpm 모터전류보다 크다.
+#
+#  ⚠ 정지 영점에는 컨트롤러 대기전류가 실려 있다. 채널별로 빼야 참 0 A 가 된다.
+#    지금은 GP27 의 부호가 반대(SIGN_GP27=-1)라 두 채널 평균에서 대기분이 **우연히 상쇄**되지만
+#    (0.03 LSB), 조치 #20 으로 센서 #2 배선을 고치면 그 상쇄가 사라져 6.4 LSB 치우친다.
+#    그래서 평균에 기대지 않고 아래 상수로 명시적으로 뺀다. #20 을 하면 QUIET_GP27 부호를 뒤집을 것.
+V_RAIL_REF = 3.27605        # 2026-08-14 교정 시점의 레일 (영점 평균 2062.47 에서 역산)
+QUIET_GP28 = 6.396          # 정지 영점에 실린 대기전류분 [LSB] — DMM 0.077 A 기준
+QUIET_GP27 = -6.452         # 부호 반대 (센서 #2 IP 역결선)
+RAIL_LO, RAIL_HI = 2.9, 3.6  # 이 밖이면 역산이 이상한 것 — 보정을 걸지 않는다
 
 # 선형성 보증 창 (ACS37030 ±20 A @66 mV/A, 1.65 V 중심 → 0.33~2.97 V)
 # 우연히 옛 ACS758 ±50 A 가정과 같은 창이 나온다 — 값은 그대로 맞다.
@@ -146,6 +165,8 @@ def rd(a):
 zero_gp27 = 0.0            # 전류 채널 영점 raw (fractional)
 zero_gp28 = 0.0
 zero_valid = False
+v_rail = V_RAIL_REF        # 영점에서 역산한 레일 [V]
+rail_corr = 1.0            # 교정 시점 대비 보정 계수. 1.0 이면 그때와 같은 레일
 streaming = False
 raw_mode = True            # True: raw 만 전송(호스트가 환산) / False: 환산값도 함께
 seq = 0
@@ -216,7 +237,7 @@ def calibrate_zero(n=None):
 
        ⚠ ACS37030 은 **비-비율**이라 영점이 1.65 V 고정이다. 레일이 흔들리면 영점이
           raw 상에서 이동하므로, 여기서 레일 역추정을 해야 한다 — README §5, 조치 #18."""
-    global zero_gp27, zero_gp28, zero_valid
+    global zero_gp27, zero_gp28, zero_valid, v_rail, rail_corr
     n = ZERO_N if n is None else n
     s = [0, 0]
     for _ in range(n):
@@ -227,6 +248,17 @@ def calibrate_zero(n=None):
     zero_gp28 = s[0] / n
     zero_gp27 = s[1] / n
     zero_valid = True
+
+    # 레일 역추정 — 대기전류분을 빼고 두 채널 평균으로
+    z = ((zero_gp28 - QUIET_GP28) + (zero_gp27 - QUIET_GP27)) / 2.0
+    if z > 0:
+        r = 1.650 * 4095 / z
+        if RAIL_LO < r < RAIL_HI:
+            v_rail = r
+            rail_corr = r / V_RAIL_REF
+        else:
+            v_rail = r
+            rail_corr = 1.0     # 범위 밖 — 보정하지 않고 값만 알린다
     return zero_gp27, zero_gp28
 
 
@@ -244,10 +276,14 @@ def flags_of(vmin, vmax):
 
 
 def to_eng(mean):
-    """raw 평균 → 공학 단위. (V_bus[V], GP28[A], GP27[A])"""
-    v = mean[0] * V_PER_LSB * SCALE_V
-    i28 = (mean[2] - zero_gp28) * A_PER_LSB * SCALE_GP28 * SIGN_GP28
-    i27 = (mean[1] - zero_gp27) * A_PER_LSB * SCALE_GP27 * SIGN_GP27
+    """raw 평균 → 공학 단위. (V_bus[V], GP28[A], GP27[A])
+
+       `rail_corr` 는 레일이 교정 시점에서 벗어난 만큼을 되돌린다. 전류는 비-비율 센서라
+       게인이 레일에 비례하고, 전압은 LSB_V 자체가 레일에 비례하므로 둘 다 같은 계수를 받는다.
+       교정 시점과 같은 레일이면 1.0 이라 아무것도 바꾸지 않는다."""
+    v = mean[0] * V_PER_LSB * SCALE_V * rail_corr
+    i28 = (mean[2] - zero_gp28) * A_PER_LSB * SCALE_GP28 * SIGN_GP28 * rail_corr
+    i27 = (mean[1] - zero_gp27) * A_PER_LSB * SCALE_GP27 * SIGN_GP27 * rail_corr
     return v, i28, i27
 
 
@@ -260,6 +296,8 @@ def print_config():
         % (SENS_MV_A, A_PER_LSB, SCALE_GP28, SCALE_GP27))
     out("#CFG sign_gp28=%d sign_gp27=%d lin_lo=%d lin_hi=%d" % (SIGN_GP28, SIGN_GP27, RAW_LIN_LO, RAW_LIN_HI))
     out("#CFG zero_gp28=%.3f zero_gp27=%.3f valid=%d" % (zero_gp28, zero_gp27, 1 if zero_valid else 0))
+    out("#CFG rail=%.4f rail_ref=%.4f rail_corr=%.6f quiet28=%.3f quiet27=%.3f"
+        % (v_rail, V_RAIL_REF, rail_corr, QUIET_GP28, QUIET_GP27))
     out("#CFG ch: GP26=V_bus GP27=sensor#2 GP28=sensor#1  agnd=pin33  3v3=pin36")
 
 
@@ -322,7 +360,8 @@ def handle(line):
         was = streaming
         streaming = False
         z = calibrate_zero()
-        out("#ZERO gp28=%.3f gp27=%.3f n=%d" % (z[1], z[0], ZERO_N))
+        out("#ZERO gp28=%.3f gp27=%.3f rail=%.4f rail_corr=%.6f n=%d"
+            % (z[1], z[0], v_rail, rail_corr, ZERO_N))
         streaming = was
     elif c == "C":
         print_config()
@@ -384,7 +423,8 @@ else:
 
 # 부팅 시 1회 영점 보정 — 정지 상태 가정
 calibrate_zero(256)
-out("#ZERO gp28=%.3f gp27=%.3f n=256 (boot)" % (zero_gp28, zero_gp27))
+out("#ZERO gp28=%.3f gp27=%.3f rail=%.4f rail_corr=%.6f n=256 (boot)"
+    % (zero_gp28, zero_gp27, v_rail, rail_corr))
 
 if streaming:
     print_header()
