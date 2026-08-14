@@ -30,8 +30,8 @@ except ImportError:
 # v_per_lsb 는 2026-08-13 에 28.8 V 1 점 적합으로 갱신됨 (DIV_RATIO 11.9929 → 11.3310)
 # a_per_lsb 는 ACS37030(66 mV/A) 기준. 2026-08-14 DMM 교정으로 scale_gp28=0.9852
 CFG = dict(v_per_lsb=9.1312e-3, a_per_lsb=12.21e-3, scale_v=1.0,
-           scale_gp28=0.9852, scale_gp27=1.0, sign_gp28=1, sign_gp27=1,
-           zero_gp28=2048.0, zero_gp27=2048.0, lin_lo=410, lin_hi=3686)
+           scale_gp28=0.9852, scale_gp27=0.9544, sign_gp28=1, sign_gp27=-1,
+           zero_gp28=2060.63, zero_gp27=2064.31, lin_lo=410, lin_hi=3686)
 
 FLAG = {0: "V<lo", 1: "GP27<lo", 2: "GP28<lo", 3: "V>hi", 4: "GP27>hi", 5: "GP28>hi",
         6: "zero_ok", 7: "OVERRUN"}

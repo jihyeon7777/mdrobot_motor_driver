@@ -27,10 +27,10 @@ def generate_launch_description():
                 'v_per_lsb': 9.1312e-3,    # LSB_V × DIV_RATIO 11.3310 (2026-08-13 1 점 적합)
                 'a_per_lsb': 12.21e-3,     # LSB_V ÷ 66.0 mV/A — ACS37030, 보고서 20260814 §7
                 'scale_v': 1.0,            # 교정(C6) 후 갱신
-                'scale_gp28': 0.9852,      # 2026-08-14 DMM 15 점 교정
-                'scale_gp27': 1.0,         # 미교정
-                'sign_gp28': 1,              # T3 에서 확인
-                'sign_gp27': 1,
+                'scale_gp28': 0.9852,      # 2026-08-14 DMM 15 점 교정 (+12.029 mA/LSB)
+                'scale_gp27': 0.9544,      # 2026-08-14 DMM 14 점 교정 (−11.653 mA/LSB)
+                'sign_gp28': 1,
+                'sign_gp27': -1,           # 센서 #2 IP 단자 역결선 — 보고서 20260814 §7
                 'design_capacity': 20.0,
                 'cell_count': 7,
             }],

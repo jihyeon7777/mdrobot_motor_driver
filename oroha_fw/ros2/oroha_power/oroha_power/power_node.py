@@ -76,12 +76,15 @@ class OrohaPowerNode(Node):
         # (26.4 mV/A)로 잘못 적혀 있어 2.54 배 과대했다 — 보고서 20260814 §7.
         d("a_per_lsb", 12.21e-3)       # LSB_V ÷ 66.0 mV/A (공칭)
         d("scale_v", 1.0)
-        d("scale_gp28", 0.9852)   # 2026-08-14 DMM 15 점 교정 → 실효 12.029 mA/LSB
-        d("scale_gp27", 1.0)      # 미교정 — id=2 를 아직 구동한 적이 없다
+        d("scale_gp28", 0.9852)   # 2026-08-14 DMM 15 점 → 실효 +12.029 mA/LSB
+        d("scale_gp27", 0.9544)   # 2026-08-14 DMM 14 점 → 실효 −11.653 mA/LSB
         d("sign_gp28", 1)
-        d("sign_gp27", 1)
-        d("zero_gp28", 2048.0)           # 펌웨어 #ZERO 로 갱신됨
-        d("zero_gp27", 2048.0)
+        d("sign_gp27", -1)        # 센서 #2 IP 단자 역결선 — 보고서 20260814 §7
+        # 아래는 DMM 교정의 0 A 절편이다. ⚠ 펌웨어 #ZERO 가 오면 덮어쓰는데, 그 값은
+        # 정지 상태 raw 라 컨트롤러 대기전류(약 0.077 A)가 포함된다 — 상대 전류에는
+        # 맞고 절대 전류에는 아니다.
+        d("zero_gp28", 2060.63)
+        d("zero_gp27", 2064.31)
         d("design_capacity", 20.0)     # Ah — BatteryState 용
         d("cell_count", 7)
 

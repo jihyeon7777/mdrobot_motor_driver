@@ -59,7 +59,13 @@ ADC_MID = 2047.5
 # 2026-08-14 DMM 15 점 교정 (보고서 20260814 §7). 이전 값 AMPS_FULL/ADC_MID =
 # 9.768 mA/LSB 는 18.8% 낮았다 — 이 스크립트로 낸 8/09·8/11·8/12 의 전류
 # 절대값은 모두 23.1% 낮게 적혀 있다. 상대 비교(좌우 비 등)는 영향 없다.
-LSB_A = 12.0289e-3
+# 채널별 실효 A/LSB — 2026-08-14 DMM 교정 (보고서 20260814 §4·§7)
+#   GP28 (id=1) : +12.0289 mA/LSB
+#   GP27 (id=2) : **−11.6534** — 부호가 반대다. 센서 #2 의 IP 단자가 #1 과 반대로 물려 있다.
+#     8/12 로그에도 같은 부호로 남아 있다(구동 시 raw 하강). 8/09 보고서는 이를 거울 장착
+#     탓으로 설명했는데 그건 틀렸다 — 센서는 DC 급전선에 있어 회전 방향과 무관하다.
+LSB_A_CH = {"gp27": -11.6534e-3, "gp28": 12.0289e-3}
+LSB_A = LSB_A_CH["gp28"]      # GP26(전압 채널) 대조용 기본값
 IDS = (1, 2)
 H, D, C26, C27, C28, FL, SEQ = range(7)
 
@@ -312,8 +318,8 @@ def summarize(bench: Bench, pico: PicoLogger) -> None:
         if prev_rest is None:
             continue
         d26 = (rec["gp26"] - prev_rest["gp26"]) * LSB_A
-        d27 = (rec["gp27"] - prev_rest["gp27"]) * LSB_A
-        d28 = (rec["gp28"] - prev_rest["gp28"]) * LSB_A
+        d27 = (rec["gp27"] - prev_rest["gp27"]) * LSB_A_CH["gp27"]
+        d28 = (rec["gp28"] - prev_rest["gp28"]) * LSB_A_CH["gp28"]
         rec |= {"d26": d26, "d27": d27, "d28": d28, "cm": (d27 + d28) / 2}
         print(f"{rec['label']:<22}{rec['cmd1']:>5}/{rec['cmd2']:<5}"
               f"{d26:>+11.4f}{d27:>+11.4f}{d28:>+11.4f}{(d27 + d28) / 2:>+15.4f}")

@@ -44,7 +44,13 @@ ADC_MID = 2047.5
 # 2026-08-14 DMM 15 점 교정 (보고서 20260814 §7). 이전 값 AMPS_FULL/ADC_MID =
 # 9.768 mA/LSB 는 18.8% 낮았다 — 이 스크립트로 낸 8/09·8/11·8/12 의 전류
 # 절대값은 모두 23.1% 낮게 적혀 있다. 상대 비교(좌우 비 등)는 영향 없다.
-LSB_A = 12.0289e-3
+# 채널별 실효 A/LSB — 2026-08-14 DMM 교정 (보고서 20260814 §4·§7)
+#   GP28 (id=1) : +12.0289 mA/LSB
+#   GP27 (id=2) : **−11.6534** — 부호가 반대다. 센서 #2 의 IP 단자가 #1 과 반대로 물려 있다.
+#     8/12 로그에도 같은 부호로 남아 있다(구동 시 raw 하강). 8/09 보고서는 이를 거울 장착
+#     탓으로 설명했는데 그건 틀렸다 — 센서는 DC 급전선에 있어 회전 방향과 무관하다.
+LSB_A_CH = {"gp27": -11.6534e-3, "gp28": 12.0289e-3}
+LSB_A = LSB_A_CH["gp28"]      # GP26(전압 채널) 대조용 기본값
 IDS = (1, 2)
 H, D, C26, C27, C28, FL = range(6)
 CHANNELS = ((C26, "GP26"), (C27, "GP27"), (C28, "GP28"))
@@ -236,9 +242,9 @@ def main() -> int:
         c1 = st.mean([r["cur1"] for r in rows if r.get("cur1") is not None] or [0])
         c2 = st.mean([r["cur2"] for r in rows if r.get("cur2") is not None] or [0])
         s27, s28 = abs(d27) / sigma[C27], abs(d28) / sigma[C28]
-        table.append((rpm, m1, m2, c1, c2, d27 * LSB_A, d28 * LSB_A, s27, s28))
+        table.append((rpm, m1, m2, c1, c2, d27 * LSB_A_CH["gp27"], d28 * LSB_A_CH["gp28"], s27, s28))
         print(f"  {rpm:>6}{m1:>7.0f}{m2:>7.0f}{c1:>10.2f}{c2:>7.2f}"
-              f"{d27 * LSB_A:>+10.3f}A{d28 * LSB_A:>+10.3f}A{s27:>7.1f}σ{s28:>7.1f}σ")
+              f"{d27 * LSB_A_CH['gp27']:>+10.3f}A{d28 * LSB_A_CH['gp28']:>+10.3f}A{s27:>7.1f}σ{s28:>7.1f}σ")
 
     if len(table) >= 3:
         print("\n[선형성 — 실측 속도 대비 전류]")
@@ -262,8 +268,8 @@ def main() -> int:
                         "gp27_A_rel", "gp28_A_rel"])
             for s in pico.samples:
                 w.writerow([f"{pico.t(s):.4f}", s[C26], s[C27], s[C28], s[FL],
-                            f"{(s[C27] - base_raw[C27]) * LSB_A:.4f}",
-                            f"{(s[C28] - base_raw[C28]) * LSB_A:.4f}"])
+                            f"{(s[C27] - base_raw[C27]) * LSB_A_CH['gp27']:.4f}",
+                            f"{(s[C28] - base_raw[C28]) * LSB_A_CH['gp28']:.4f}"])
         print(f"\n전류 로그 {len(pico.samples)} 샘플 → {args.csv}")
     if abort:
         print(f"\n중단 사유: {abort}")
