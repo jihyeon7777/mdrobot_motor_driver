@@ -46,7 +46,12 @@ PICO = BY_ID / "usb-MicroPython_Board_in_FS_mode_e6616408435d4437-if00"
 
 RAMP_STEP = 200          # rpm 계단
 RAMP_DT = 0.30           # 계단 간격 s → 667 rpm/s
-A_PER_LSB = 12.029e-3    # ACS37030, 2026-08-14 DMM 교정 (보고서 20260814 §7)
+
+# ACS37030 (66 mV/A). 채널마다 교정 상태가 다르므로 따로 둔다 — 보고서 20260814 §4.
+#   GP28 : 2026-08-14 DMM 15 점 교정 → 12.0289 mA/LSB
+#   GP27 : **미교정.** 공칭값(LSB_V ÷ 66 mV/A = 12.210)을 쓴다. 교정 전까지 표시값은
+#          최대 1.5% 어긋날 수 있다 — 방향·채널 판정에는 영향 없다(부호와 크기 순서만 본다).
+A_PER_LSB = {"GP28": 12.0289e-3, "GP27": 12.210e-3}
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -112,8 +117,8 @@ class Pico(threading.Thread):
         sel = [r for r in self.rows if t0 <= r[0] <= t1]
         if not sel:
             return float("nan"), float("nan"), 0
-        i28 = st.mean([(r[1] - self.zero[0]) * A_PER_LSB for r in sel])
-        i27 = st.mean([(r[2] - self.zero[1]) * A_PER_LSB for r in sel])
+        i28 = st.mean([(r[1] - self.zero[0]) * A_PER_LSB["GP28"] for r in sel])
+        i27 = st.mean([(r[2] - self.zero[1]) * A_PER_LSB["GP27"] for r in sel])
         return i28, i27, len(sel)
 
     def shutdown(self) -> None:
