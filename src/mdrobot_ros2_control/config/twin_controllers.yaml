@@ -18,23 +18,28 @@ mdrobot_hardware:
     baudrate: 19200
     # Per-wheel Modbus slave ids — MUST be distinct (on_init rejects equal ids).
     #
-    # !!! UNVERIFIED SIDE ASSIGNMENT — DO NOT DRIVE THIS CONFIG AS-IS !!!
-    # On 2026-08-14 slave id=1 was driven alone and the wheel that turned was the
-    # robot's RIGHT one (right in the ROS sense, facing the direction of travel).
-    # See docs/hardware_test_20260814.md section 2. So motor_id_L: 1 below is
-    # backwards and diff_cont would steer mirrored.
+    # Measured 2026-08-14 by driving each unit alone with the base lifted and
+    # watching the wheels (docs/hardware_test_20260814.md sections 2 and 6):
     #
-    # It is NOT simply swapped yet because id=2 has never been driven, so its
-    # direction convention and mounting mirror are unknown, and reverse_L /
-    # reverse_R / counts_per_rev_* would have to move with the physical units,
-    # not with the side labels. Run test/wheel_direction_check.py --id 2 first,
-    # then fix all four together. Tracked as action #17.
-    motor_id_L: 1
-    motor_id_R: 2
-    # Skid-steer mounts the motors mirrored; set the side that spins backwards true.
-    reverse_L: true
-    reverse_R: false
+    #     id=1  ->  RIGHT wheel   +rpm turns it FORWARD
+    #     id=2  ->  LEFT  wheel   +rpm turns it BACKWARD   (mirrored mount)
+    #
+    # "right"/"forward" in the ROS sense, facing the direction of travel.
+    #
+    # This file previously had motor_id_L: 1, which is backwards and would have
+    # made diff_cont steer mirrored. The ids are now swapped; reverse_L/reverse_R
+    # keep their values because "the left one is the mirrored one" happens to
+    # hold either way, but they now apply to the units that actually need them.
+    motor_id_L: 2
+    motor_id_R: 1
+    # The motors are mounted mirrored, so the left one has to be inverted for a
+    # positive joint command to drive the robot forward. mdrobot_system.cpp:418
+    # applies direction symmetrically to commands and feedback, so odometry sign
+    # stays consistent.
+    reverse_L: true      # id=2, left  — +rpm drives the robot backwards
+    reverse_R: false     # id=1, right — +rpm drives the robot forwards
     # Per-wheel counts/rev (hall = 3 x pole count; MD400 8-pole ~ 24). 0 = raw.
+    # Both sides are 30.0, so the id swap above does not move these.
     counts_per_rev_L: 30.0
     counts_per_rev_R: 30.0
     use_limit_sw: 0      # -1 leave as-is / 0 disable / 1 enable (some need 0 for serial)
