@@ -130,11 +130,13 @@ class Pico(threading.Thread):
                 pass
 
 
-def ramp_to(drv, cur: int, target: int) -> int:
+def ramp_to(drvs, cur: int, target: int) -> int:
+    """계단 램프. 여러 축이면 같은 계단을 동시에 먹인다 (667 rpm/s)."""
     while cur != target:
         d = target - cur
         cur += min(RAMP_STEP, d) if d > 0 else max(-RAMP_STEP, d)
-        drv.set_velocity(cur)
+        for drv in drvs:
+            drv.set_velocity(cur)
         time.sleep(RAMP_DT)
     return cur
 
@@ -153,102 +155,152 @@ def fit(x, y):
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--id", type=int, default=1, choices=(1, 2))
+    ap.add_argument("--id", default="1",
+                    help="1 | 2 | both.  both 는 두 유닛을 같은 지령으로 **동시 구동**한다 "
+                         "(반대쪽 torque_off 없음). 단독 스윕과 나란히 놓으면 상대 축이 "
+                         "돌 때 각 바퀴가 더 먹는지를 볼 수 있다. 출력은 -o 파일명의 "
+                         "id1 을 id2 로 바꾼 두 개가 된다")
     ap.add_argument("--rpms", default="100,300,500,700,1000,1500")
     ap.add_argument("--dwell", type=float, default=12.0)
     ap.add_argument("--no-down", action="store_true", help="상승만 (하강 반복 생략)")
+    ap.add_argument("--no-dmm", action="store_true",
+                    help="DMM 입력을 묻지 않고 무인 진행. raw 만 기록되고 회귀는 생략된다. "
+                         "게인은 2026-08-14 교정값을 그대로 쓰고 이 스윕은 좌우 대조에만 "
+                         "쓸 때 — 절대 교정을 새로 뜨는 게 아니라면 이쪽이다")
     ap.add_argument("-o", "--out", required=True)
     args = ap.parse_args()
 
+    if args.id == "both":
+        units = [1, 2]
+        p = Path(args.out)
+        if "id1" not in p.name:
+            print("!! --id both 는 -o 파일명에 'id1' 이 있어야 한다 "
+                  "(id2 판을 같은 이름에서 파생한다).")
+            return 1
+        outs = {1: p, 2: p.with_name(p.name.replace("id1", "id2"))}
+    elif args.id in ("1", "2"):
+        units = [int(args.id)]
+        outs = {units[0]: Path(args.out)}
+    else:
+        print("!! --id 는 1 / 2 / both 중 하나여야 한다.")
+        return 1
+    idle = [u for u in (1, 2) if u not in units]
+
+    for p in outs.values():
+        if p.exists():
+            print(f"!! {p} 이 이미 있다. 덮어쓰면 대조군이 사라진다 — 다른 이름을 쓸 것.")
+            return 1
+
     speeds = [int(s) for s in args.rpms.split(",")]
     plan = [0] + speeds + ([0] + list(reversed(speeds)) if not args.no_down else []) + [0]
-    other = 2 if args.id == 1 else 1
-    ch_name, _ = CH_OF_ID[args.id]
 
     print("=" * 76)
-    print(f"ACS37030 절대 교정 — id={args.id} ({ch_name}), id={other} 는 torque_off")
-    print(f"⚠ 모터가 돈다. {len(plan)} 점, 점당 {args.dwell:.0f} s + DMM 입력 대기")
+    if idle:
+        print(f"ACS37030 절대 교정 — id={units[0]} ({CH_OF_ID[units[0]][0]}), "
+              f"id={idle[0]} 는 torque_off")
+    else:
+        print("좌우 동시 구동 스윕 — id=1(GP28) + id=2(GP27) 을 같은 지령으로 동시에")
+        print("  ⚠ 거울 장착이라 같은 +rpm 에서 두 바퀴가 공간상 반대로 돈다 (보고서 0814 §6).")
+        print("    전류센서는 DC 급전선에 있어 회전 방향과 무관하다.")
+    if args.no_dmm:
+        est = len(plan) * args.dwell + sum(abs(b - a) for a, b in zip(plan, plan[1:])) \
+            / RAMP_STEP * RAMP_DT
+        print(f"⚠ 모터가 돈다. {len(plan)} 점, 점당 {args.dwell:.0f} s, "
+              f"무인 진행 — 예상 {est / 60:.1f} 분")
+    else:
+        print(f"⚠ 모터가 돈다. {len(plan)} 점, 점당 {args.dwell:.0f} s + DMM 입력 대기")
     print(f"  순서: {plan}")
     print("=" * 76)
 
-    rows: list[dict] = []
+    rows: dict[int, list[dict]] = {u: [] for u in units}
     pico = Pico()
     pico.start()
     if not pico.ok:
         return 1
 
-    drv = other_drv = tr = None
+    drvs: dict[int, SingleMotorDriver] = {}
+    tr = None
     cur = 0
     try:
         tr = SerialTransport(str(FTDI), baudrate=19200, timeout=0.3)
-        drv = SingleMotorDriver(ModbusClient(tr, slave_id=args.id))
-        other_drv = SingleMotorDriver(ModbusClient(tr, slave_id=other))
+        for sid in (1, 2):
+            drvs[sid] = SingleMotorDriver(ModbusClient(tr, slave_id=sid))
 
-        for sid, d in ((args.id, drv), (other, other_drv)):
+        for sid in (1, 2):
+            d = drvs[sid]
             v = d.client.read_register(reg.PID_VERSION) & 0xFF
             s = d.get_status()
             print(f"  id={sid}: fw v{v // 10}.{v % 10}  {d.get_voltage():.1f} V  "
                   f"status={getattr(s, 'active', None) or '이상 없음'}")
-        other_drv.torque_off()
-        print(f"  id={other} torque_off 완료\n")
+        for sid in idle:
+            drvs[sid].torque_off()
+            print(f"  id={sid} torque_off 완료")
+        print()
 
         enabled = False
         for i, rpm in enumerate(plan):
             if rpm != 0 and not enabled:
-                drv.enable()
+                for u in units:
+                    drvs[u].enable()
                 enabled = True
-            cur = ramp_to(drv, cur, rpm)
+            cur = ramp_to([drvs[u] for u in units], cur, rpm)
             if rpm == 0:
-                drv.stop()
+                for u in units:
+                    drvs[u].stop()
 
             t0 = time.time()
-            md = []
+            md: dict[int, list] = {u: [] for u in units}
             while time.time() - t0 < args.dwell:
-                try:
-                    md.append((drv.get_speed(), drv.get_current()))
-                except Exception:
-                    pass
+                for u in units:
+                    try:
+                        md[u].append((drvs[u].get_speed(), drvs[u].get_current()))
+                    except Exception:
+                        pass
                 time.sleep(0.3)
             t1 = time.time()
-
             w = pico.window(t0 + 0.5, t1)
-            spd = st.mean([m[0] for m in md]) if md else float("nan")
-            mdc = st.mean([m[1] for m in md]) if md else float("nan")
-            raw = w.get(ch_name.lower(), float("nan"))
 
-            print(f"\n  [{i + 1}/{len(plan)}] {rpm:>+5} rpm │ 실측 {spd:>+7.1f} rpm │ "
-                  f"{ch_name} raw {raw:8.3f} (σ {w.get(ch_name.lower() + '_sd', 0):.2f}, "
-                  f"n={w.get('n', 0)}) │ 내장계 {mdc:+.2f} A")
-            try:
-                s = input("      DMM 전류 [A] (엔터=건너뜀): ").strip()
-            except EOFError:
-                s = ""
-            dmm = ""
-            if s:
-                try:
-                    dmm = "%.6f" % float(s)
-                except ValueError:
-                    print("      숫자가 아니라 건너뜁니다")
+            print(f"\n  [{i + 1}/{len(plan)}] 지령 {rpm:>+5} rpm  (n_pico={w.get('n', 0)})")
+            for u in units:
+                ch_name = CH_OF_ID[u][0]
+                key = ch_name.lower()
+                raw = w.get(key, float("nan"))
+                spd = st.mean([m[0] for m in md[u]]) if md[u] else float("nan")
+                mdc = st.mean([m[1] for m in md[u]]) if md[u] else float("nan")
+                print(f"      id={u} │ 실측 {spd:>+7.1f} rpm │ {ch_name} raw {raw:8.3f} "
+                      f"(σ {w.get(key + '_sd', 0):.2f}) │ 내장계 {mdc:+.2f} A")
 
-            rows.append(dict(point=i, rpm_cmd=rpm, rpm_meas="%.1f" % spd,
-                             dmm_a=dmm, ch=ch_name,
-                             raw="%.4f" % raw,
-                             raw_sd="%.4f" % w.get(ch_name.lower() + "_sd", 0),
-                             n_pico=w.get("n", 0),
-                             gp26="%.3f" % w.get("gp26", float("nan")),
-                             gp27="%.4f" % w.get("gp27", float("nan")),
-                             gp28="%.4f" % w.get("gp28", float("nan")),
-                             md_current="%.2f" % mdc, n_md=len(md),
-                             t0="%.3f" % t0, t1="%.3f" % t1))
+                if args.no_dmm:
+                    s = ""
+                else:
+                    try:
+                        s = input(f"      id={u} DMM 전류 [A] (엔터=건너뜀): ").strip()
+                    except EOFError:
+                        s = ""
+                dmm = ""
+                if s:
+                    try:
+                        dmm = "%.6f" % float(s)
+                    except ValueError:
+                        print("      숫자가 아니라 건너뜁니다")
+
+                rows[u].append(dict(point=i, rpm_cmd=rpm, rpm_meas="%.1f" % spd,
+                                    dmm_a=dmm, ch=ch_name,
+                                    raw="%.4f" % raw,
+                                    raw_sd="%.4f" % w.get(key + "_sd", 0),
+                                    n_pico=w.get("n", 0),
+                                    gp26="%.3f" % w.get("gp26", float("nan")),
+                                    gp27="%.4f" % w.get("gp27", float("nan")),
+                                    gp28="%.4f" % w.get("gp28", float("nan")),
+                                    md_current="%.2f" % mdc, n_md=len(md[u]),
+                                    t0="%.3f" % t0, t1="%.3f" % t1))
 
     except KeyboardInterrupt:
         print("\n  중단 요청 — 정지 시퀀스로 넘어간다")
     except Exception as e:
         print(f"\n  오류: {type(e).__name__}: {e}")
     finally:
-        for d in (drv, other_drv):
-            if d is None:
-                continue
+        for d in drvs.values():
             for fn in ("stop", "torque_off", "disable"):
                 try:
                     getattr(d, fn)()
@@ -262,15 +314,21 @@ def main() -> int:
         print("\n  정지 시퀀스 완료 (stop → torque_off → disable, 양쪽)")
         pico.shutdown()
 
-    if rows:
-        with open(args.out, "w", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
-            w.writeheader()
-            w.writerows(rows)
-        print(f"  저장: {args.out}")
+    for u in units:
+        if rows[u]:
+            with open(outs[u], "w", newline="") as f:
+                w = csv.DictWriter(f, fieldnames=list(rows[u][0].keys()))
+                w.writeheader()
+                w.writerows(rows[u])
+            print(f"  저장: {outs[u]}")
 
     # ── 회귀 ────────────────────────────────────────────────────────
-    pts = [(float(r["raw"]), float(r["dmm_a"])) for r in rows if r["dmm_a"]]
+    if len(units) != 1:
+        print("\n  동시 구동 판은 절대 교정이 아니다 — 회귀를 생략한다.")
+        print("  좌우 대조는:  python3 test/calib_compare.py --tags 0814,<이번 태그>")
+        return 0
+    ch_name = CH_OF_ID[units[0]][0]
+    pts = [(float(r["raw"]), float(r["dmm_a"])) for r in rows[units[0]] if r["dmm_a"]]
     if len(pts) < 3:
         print("\n  DMM 입력이 3 점 미만이라 회귀를 생략한다.")
         return 0

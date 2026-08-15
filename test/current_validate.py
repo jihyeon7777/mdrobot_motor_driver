@@ -341,6 +341,15 @@ def main() -> int:
     ap.add_argument("--skip-zero", action="store_true")
     args = ap.parse_args()
 
+    # 같은 태그로 두 번 돌리면 과거 세션 로그가 사라진다. 이 시험의 값어치는 전부
+    # 세션 간 대조에 있으므로, 7 분을 돌린 **뒤에** 알아채면 늦다 — 시작 전에 막는다.
+    exist = [p.name for p in (REPO / "test" / "logs" / f"validate_{k}_{args.tag}.csv"
+                              for k in ("pico", "motor", "marks")) if p.exists()]
+    if exist:
+        print(f"!! --tag {args.tag} 의 로그가 이미 있다: {', '.join(exist)}")
+        print("   덮어쓰면 과거 세션과 대조할 수 없다. 다른 태그를 쓸 것.")
+        return 1
+
     speeds = [int(x) for x in args.speeds.split(",")]
     solo = [int(x) for x in args.solo.split(",")]
     rng = random.Random(args.seed)
