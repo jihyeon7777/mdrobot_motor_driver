@@ -1,0 +1,4 @@
+label,kind,t_start,t_end,cmd1,cmd2
+A:zero_start,rest,1.0017,6.0112,0,0
+C1:zero,rest,6.1071,11.1301,0,0
+C1:+300,drive,11.8659,27.639,300,300
