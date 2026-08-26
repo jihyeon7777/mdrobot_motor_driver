@@ -57,7 +57,6 @@ REST_TOL = 8.0           # LSB — 약 0.1 A
 # ⚠ MD400 내장 전압계는 저읽음이 크다 (아래 앵커표). 세션 대조용으로만 쓰고, 실제
 #   전압은 GP26 을 볼 것 — 2026-08-15 에 DMM 27.55 V 와 27.549 V 로 일치했다.
 VOLT_REF_MD = 27.71
-VOLT_TOL = 0.35
 
 # MD400 내장 전압계 vs DMM 앵커 — 실제 버스전압의 기준선이기도 하다
 #   DMM      id=1            id=2          출처
@@ -67,8 +66,11 @@ VOLT_TOL = 0.35
 # 간격이 1.25 V 로 넓어지면서 id=1 은 순수 게인 모델(−0.189 V)도 순수 오프셋
 # 모델(−0.150 V)도 양자화 폭 ±0.05 V 를 3 배 넘게 빗나가 **둘 다 기각**된다.
 # id=2 는 아직 경계선(−0.063 / −0.050 V)이라 갈리지 않았다 — 조치 #3/#11.
-VOLT_TRUE_REF = 28.80     # 8/11 DMM 앵커. 그 세션의 실제 버스전압
-VOLT_GP26_V = 0.009131    # DIV_RATIO 11.3310 의 실효 V/LSB
+VOLT_TRUE_REF = 28.80     # 8/11 DMM 앵커. 그 세션의 실제 버스전압 (참고용 과거 점)
+# GP26 raw → 버스전압. 20260819 §5 에서 D = 11.192 로 확정된 값이고 `breakin.py:73` 과
+# 같은 자다. 예전 0.009131 은 DIV_RATIO 11.3310(ADC 정착 오차가 섞인 값) 기준이라
+# 1.64% 높게 읽혔다 — DMM 과 나란히 놓을 때 25 V 에서 0.4 V 어긋난다.
+VOLT_GP26_V = 8.9815e-3
 
 checks: list[tuple[bool, str, bool]] = []
 
@@ -142,12 +144,14 @@ def check_md400(polls: int) -> dict:
         ok(abs(gap - VOLT_GAP) < 0.25,
            f"컨트롤러 간 격차 {gap:+.3f} V (6 세션 기준 {VOLT_GAP:+.3f} V — 계측 오프셋)",
            blocking=False)
+        # 배터리 충전 상태는 세션마다 다른 것이 정상이므로 **합격/불합격이 아니다.**
+        # 고정 앵커로 판정하면 방전된 팩으로 시작하는 정상적인 세션마다 경고가 떠서,
+        # 정작 봐야 할 경고에 무뎌진다. 값과 함의만 알린다.
         v1 = out[1]["v"]
-        ok(v1 > VOLT_REF_MD - VOLT_TOL,
-           f"배터리 수준 — id=1 내장계 {v1:.3f} V vs 8/11·8/12 세션 {VOLT_REF_MD:.2f} V "
-           f"({v1 - VOLT_REF_MD:+.2f} V). 낮으면 전류가 통째로 부풀어 직전 세션과 "
-           f"나란히 놓을 수 없다. **내장계 기준이다 — 실제 전압은 [4] 의 GP26**",
-           blocking=False)
+        print(f"      배터리 수준 — id=1 내장계 {v1:.3f} V "
+              f"(8/11·8/12 세션 {VOLT_REF_MD:.2f} V 대비 {v1 - VOLT_REF_MD:+.2f} V). "
+              f"낮으면 같은 마찰에도 전류가 반비례로 부푼다 — 세션 간 대조는 전류가 아니라 "
+              f"전력(P=I×V)으로 할 것. **내장계 기준이다 — 실제 전압은 [4] 의 GP26**")
     return out
 
 
@@ -222,10 +226,11 @@ def check_pico(sec: float, rate: int) -> dict:
             vbus = mean * VOLT_GP26_V
             print(f"      {ch}  raw {mean:8.2f}  σ {sd:5.2f}  범위 {min(v):.0f}~{max(v):.0f}"
                   f"   → 버스 {vbus:6.3f} V  (전압 채널)")
-            ok(vbus > VOLT_TRUE_REF - 0.6,
-               f"실제 버스전압 {vbus:.3f} V — 8/11 DMM 앵커 {VOLT_TRUE_REF:.2f} V 대비 "
-               f"{vbus - VOLT_TRUE_REF:+.2f} V ({(vbus / VOLT_TRUE_REF - 1) * 100:+.1f}%). "
-               f"전류가 대략 그 역수만큼 부푼다", blocking=False)
+            print(f"      실제 버스전압 {vbus:.3f} V — 8/11 DMM 앵커 "
+                  f"{VOLT_TRUE_REF:.2f} V 대비 {vbus - VOLT_TRUE_REF:+.2f} V "
+                  f"({(vbus / VOLT_TRUE_REF - 1) * 100:+.1f}%). DMM 실측과 나란히 적어 둘 것 "
+                  f"— 호스트가 바뀌면 접지 오프셋이 달라져 같은 전압에서도 다르게 읽는다 "
+                  f"(20260821 sensing §1).")
             continue
         g, zero = CAL[ch]
         lo, hi = REST_REF[ch]
