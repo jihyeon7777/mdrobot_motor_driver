@@ -190,6 +190,7 @@ class Bench:
         self.check_stall = False
         self.slow_polls = {s: 0 for s in self.ids}
         self._stall_since = {s: None for s in self.ids}
+        self.in_rest = False
         self._last_volt = 0.0
 
     # ---- 저수준
@@ -252,12 +253,16 @@ class Bench:
         if len(w) < 10 or self.abort:
             return
         v = st.mean([x[C26] for x in w]) * V_PER_LSB
-        driving = any(self.cmd.values())
-        lim = self.vmin - VMIN_LOAD_MARGIN if driving else self.vmin
+        # 엄격한 문턱은 **실제 정지 구간**에서만 쓴다. `cmd == 0` 으로 판정하면 방향
+        # 전환 램프가 0 을 지나는 순간에도 걸리는데, 그때 버스는 아직 회복 중이라
+        # 정상 배터리에서도 오작동 중단이 난다 (2026-08-26 단계 4 에서 실제로 발생:
+        # 부하 중 21.75 V 로 구동 문턱 21.50 은 안 넘겼는데, 램프가 0 을 지나며
+        # 회복 중이던 21.99 V 에 정지 문턱 22.50 이 걸렸다).
+        lim = self.vmin if self.in_rest else self.vmin - VMIN_LOAD_MARGIN
         if v < lim:
             self.abort = (f"버스전압 {v:.2f} V < 하한 {lim:.2f} V "
-                          f"({'구동 중' if driving else '정지 중'}) — 배터리 소진. "
-                          f"충전 후 재개할 것")
+                          f"({'정지 구간' if self.in_rest else '구동·램프 중'}) — "
+                          f"배터리 소진. 충전 후 재개할 것")
 
     def wait(self, seconds: float) -> bool:
         end = time.monotonic() + seconds
@@ -295,7 +300,9 @@ class Bench:
 
     def segment(self, label: str, kind: str, seconds: float) -> bool:
         a = self.now()
+        self.in_rest = kind == "rest"
         ok = self.wait(seconds)
+        self.in_rest = False
         mark = {"label": label, "kind": kind, "t_start": round(a, 4),
                 "t_end": round(self.now(), 4)}
         for sid in self.ids:
