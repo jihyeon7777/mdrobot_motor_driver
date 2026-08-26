@@ -2,8 +2,10 @@
 # -*- coding: utf-8 -*-
 """새 감속기 그리스 브레이크인 — 돌려서 길들이고, 언제 끝났는지 판정한다 (조치 #22).
 
-⚠ **모터가 실제로 돈다.** 완전 무부하(벨트 미장착)를 전제로 한다. 벨트가 걸려 있으면
-   쓰지 말 것 — 부하가 걸린 추종률·전류는 아래의 판정 기준과 다른 양이다.
+⚠ **모터가 실제로 돈다.** **지면에서 띄운 상태**를 전제로 한다. 바퀴·벨트가 걸려 있어도
+   되지만(2026-08-26 부터 그 구성이다), **접지 상태로는 쓰지 말 것** — 지령 3000 rpm 이면
+   K10H30BU 30:1 감속기 출력이 100 rpm, 바퀴 속도로 1 m/s 를 넘는다.
+   바퀴·벨트가 붙은 런과 안 붙은 런(08-21 이전)은 기준 전류가 다르므로 섞어 비교하지 말 것.
 
 왜 별도 스크립트인가
   `current_validate.py` 는 측정 리그다. 브레이크인에 그대로 쓰면 세 군데서 막힌다.
@@ -21,6 +23,9 @@
     추종률   |실측| / |지령|            — 뻑뻑하면 낮고, 길들면 1 에 붙는다
     무부하전류 로컬 영점 기준 |Δ| (A)   — 길들면 내려가다 평탄해진다
     좌우비   |Δ GP28| / |Δ GP27|        — 이게 곧 다음 시험(#27)의 관심량이다
+    방향비   |Δ +방향| / |Δ −방향|       — 감속기의 방향 마찰 비대칭 (08-21 §6)
+  판정은 **전력**(P = I × V_bus) 추세로 한다. 배터리가 내려가면 같은 마찰에도 전류가
+  반비례로 부풀어(1 시간에 약 +1.2%) 추세로 위장하기 때문이다.
   세 개가 사이클 간에 평탄해지면 끝난 것이다. **평탄해지기 전에 좌우 전류를 재면**
   길들임 정도의 좌우 차이가 전류 격차로 위장한다 — 8/15 가 "격차는 감속기에 있다"까지
   좁혀 놓은 결론이 도로 흐려진다.
@@ -33,11 +38,21 @@
 
 컨트롤러 설정 레지스터는 쓰지 않는다. 쓰기는 속도 지령과 enable/disable/torque_off 뿐이다.
 
+영점은 앞뒤 정지 구간 사이에서 **보간**한다 (`zero_at`)
+  사이클 앞머리의 정지 하나만 영점으로 쓰면 `−` 구간이 항상 `+` 구간 뒤에 와서 그 사이의
+  드리프트를 통째로 뒤집어쓴다 — 20260821 §7 이 손으로 걷어낸 8~17% 과대가 그것이다.
+  구간이 길수록 커지므로, 10 분 이상 돌릴 때는 `--rest-every` 로 기준점을 촘촘히 둘 것.
+
 사용:
     python3 test/breakin.py --tag 0821                     # 양쪽, 6 사이클
-    python3 test/breakin.py --tag 0821 --id 1              # 감속기 교체한 쪽만
+    python3 test/breakin.py --tag 0821 --id 1              # 한쪽만
     python3 test/breakin.py --tag 0821 --cycles 12 --dmm 25.99
     python3 test/breakin.py --tag 0821 --speeds 200,400    # 더 뻑뻑하면 저속만
+    # 전진/후진 총부하 — id2 부호를 뒤집어 실제 주행 배치로 (08-14 §6 거울 장착)
+    python3 test/breakin.py --tag basep --mirror --speeds 300,600,900,1500 --cycles 2
+    # 제조사 표 한 단계 — CW 20 분 + CCW 20 분, 5 분마다 15 s 정지, 저전압 중단
+    python3 test/breakin.py --tag bi4 --cycles 1 --speeds 3000 --dwell 1200 \
+        --rest 15 --rest-every 300 --dir-order cw --vmin 22.5
   Ctrl-C 는 언제든 안전하다 — finally 에서 stop → torque_off → disable 을 건다.
   숫자가 평탄해지면 Ctrl-C 로 끊어도 그때까지의 로그와 요약이 남는다.
 """
@@ -83,6 +98,12 @@ SKIP_SEC = 1.5           # 구간 앞 과도 버림
 HARD_STALL_RPM = 20      # 지령이 100 rpm 이상인데 실측이 이보다 작고
 HARD_STALL_SEC = 3.0     # 이만큼 지속되면 중단 (전류만 먹고 안 도는 상태)
 SOFT_FOLLOW = 0.5        # 추종률이 이보다 낮으면 경고만 하고 계속 돈다
+
+# 수렴 판정 문턱 — 전력 기울기 %/사이클. 2σ 밴드 전체가 이 안에 들어와야 평탄이다.
+FLAT_PCT = 0.2
+# 저전압 중단 — 구동 중에는 내부저항 강하가 섞이므로 문턱을 이만큼 낮춰 잡는다.
+# 0.098 Ω(20260821 sensing §7) × 4 A ≈ 0.39 V 이므로 1.0 V 면 충분한 여유다.
+VMIN_LOAD_MARGIN = 1.0
 
 
 # ────────────────────────────────────────────────────────────── Pico
@@ -154,8 +175,10 @@ class PicoLogger(threading.Thread):
 
 # ────────────────────────────────────────────────────────────── 벤치
 class Bench:
-    def __init__(self, pico: PicoLogger, drivers: dict[int, SingleMotorDriver]) -> None:
+    def __init__(self, pico: PicoLogger, drivers: dict[int, SingleMotorDriver],
+                 vmin: float = 0.0) -> None:
         self.pico = pico
+        self.vmin = vmin
         self.drv = drivers
         self.ids = tuple(sorted(drivers))
         self.log: list[dict] = []
@@ -217,6 +240,24 @@ class Bench:
                                       f"{HARD_STALL_SEC:.0f} s 이상 정지. 기계 확인 필요")
                 else:
                     self._stall_since[sid] = None
+
+        if self.vmin:
+            self._check_volt()
+
+    def _check_volt(self) -> None:
+        """GP26 으로 저전압 중단. MD400 내장계는 0.1 V 양자화라 이 용도로 못 쓴다
+        (20260821 §9). 구동 중에는 내부저항 강하가 섞이므로 문턱을 낮춰 잡고, 깨끗한
+        판정은 정지 구간에서 한다."""
+        w = self.pico.samples[-25:]          # 50 Hz 기준 약 0.5 s
+        if len(w) < 10 or self.abort:
+            return
+        v = st.mean([x[C26] for x in w]) * V_PER_LSB
+        driving = any(self.cmd.values())
+        lim = self.vmin - VMIN_LOAD_MARGIN if driving else self.vmin
+        if v < lim:
+            self.abort = (f"버스전압 {v:.2f} V < 하한 {lim:.2f} V "
+                          f"({'구동 중' if driving else '정지 중'}) — 배터리 소진. "
+                          f"충전 후 재개할 것")
 
     def wait(self, seconds: float) -> bool:
         end = time.monotonic() + seconds
@@ -296,6 +337,39 @@ class Bench:
         return ok
 
 
+def drive_split(bench: Bench, label: str, targets: dict[int, int], seconds: float,
+                every: float, rest_sec: float) -> tuple[bool, list[dict]]:
+    """긴 구동을 `every` 초마다 정지로 끊는다. **구동 시간 총합은 그대로다** —
+    제조사 브레이크인 표의 "운전시간" 은 유지되고 정지 시간만 덤으로 붙는다.
+
+    정지 구간이 곧 영점 보간(`zero_at`)의 기준점이다. 20 분을 통으로 돌리면 그 사이
+    드리프트를 잡아 줄 것이 없어 저속 구간 수치를 못 쓴다 — 500 rpm 신호가 약 21 LSB 라
+    영점이 2 LSB 만 흘러도 10% 다.
+    """
+    # 램프 도중 중단되면 drive() 는 마크를 남기지 않는다 — marks[-1] 을 그냥 집으면
+    # 앞 구간(정지)을 구동 구간으로 오인한다. 늘어난 만큼만 가져온다.
+    def run(lbl: str, sec: float) -> tuple[bool, list[dict]]:
+        n = len(bench.marks)
+        ok = bench.drive(lbl, targets, sec)
+        return ok, bench.marks[n:]
+
+    if every <= 0 or seconds <= every:
+        return run(label, seconds)
+    marks: list[dict] = []
+    left, k = seconds, 0
+    while left > 0.01:
+        k += 1
+        chunk = min(every, left)
+        ok, ms = run(f"{label}#{k}", chunk)
+        marks.extend(ms)
+        if not ok:
+            return False, marks
+        left -= chunk
+        if left > 0.01 and not bench.rest(f"{label}#{k}z", rest_sec):
+            return False, marks
+    return True, marks
+
+
 # ────────────────────────────────────────────────────────────── 분석
 def seg_window(pico: PicoLogger, bench: Bench, mark: dict) -> tuple[list, list]:
     a, b = mark["t_start"] + SKIP_SEC, mark["t_end"]
@@ -307,24 +381,74 @@ def chan_mean(rows: list, name: str) -> float:
     return st.mean([r[i] for r in rows]) if rows else float("nan")
 
 
+def zero_anchors(pico, bench) -> list[tuple[float, dict]]:
+    """정지 구간마다 (중앙시각, 채널별 raw 평균) 을 만든다 — 영점 보간의 기준점.
+
+    구간 수가 늘 때만 다시 계산한다. 두 시간짜리 런이면 표본이 30 만 개라 사이클마다
+    전부 훑으면 재분석이 느려진다.
+    """
+    rests = [m for m in bench.marks if m["kind"] == "rest"]
+    cache = getattr(bench, "_zero_cache", None)
+    if cache is not None and cache[0] == len(rests):
+        return cache[1]
+    out = []
+    for m in rests:
+        w, _ = seg_window(pico, bench, m)
+        if not w:
+            continue
+        out.append(((m["t_start"] + m["t_end"]) / 2,
+                    {ch: chan_mean(w, ch) for ch in ("gp26", "gp27", "gp28")}))
+    bench._zero_cache = (len(rests), out)
+    return out
+
+
+def zero_at(anchors: list[tuple[float, dict]], t: float) -> dict:
+    """앞뒤 정지 구간 사이에서 영점을 선형 보간한다.
+
+    사이클 앞머리의 정지 하나만 영점으로 쓰면, `−` 구간이 항상 `+` 구간 뒤에 오므로 그
+    사이의 배터리·센서 영점 드리프트를 통째로 뒤집어쓴다. 20260821 §7 이 손으로 걷어낸
+    **8~17% 과대**가 바로 그것이고, 구간이 길수록 커진다. 여기서 자동으로 없앤다.
+    양 끝 구간은 보간할 짝이 없으므로 가장 가까운 정지 구간 값을 그대로 쓴다.
+    """
+    if not anchors:
+        return {ch: float("nan") for ch in ("gp26", "gp27", "gp28")}
+    if len(anchors) == 1 or t <= anchors[0][0]:
+        return anchors[0][1]
+    if t >= anchors[-1][0]:
+        return anchors[-1][1]
+    for (t0, z0), (t1, z1) in zip(anchors, anchors[1:]):
+        if t0 <= t <= t1:
+            f = (t - t0) / (t1 - t0) if t1 > t0 else 0.0
+            return {ch: z0[ch] + (z1[ch] - z0[ch]) * f for ch in z0}
+    return anchors[-1][1]
+
+
 def cycle_report(pico: PicoLogger, bench: Bench, cyc: int,
-                 rest_mark: dict, drive_marks: list[dict]) -> dict:
+                 drive_marks: list[dict]) -> dict:
     """한 사이클을 한 줄로 압축한다 — 이 숫자들이 평탄해지면 브레이크인이 끝난 것."""
     # 구동 중에는 offset 이 아직 0 이라 pico.window() 가 빈 리스트를 낸다. finally 의
     # align() 은 런이 끝난 뒤라 늦다 — 사이클마다 여기서 갱신해야 실시간 요약이 나온다.
     if hasattr(pico, "align"):
         pico.align()
-    zw, _ = seg_window(pico, bench, rest_mark)
-    zero = {ch: chan_mean(zw, ch) for ch in ("gp26", "gp27", "gp28")}
+    anchors = zero_anchors(pico, bench)
     follow = {s: [] for s in bench.ids}
     dcur = {s: [] for s in bench.ids}
     # 방향별로도 따로 모은다 — 직진에는 부호가 반대인 짝이 쓰이므로, 방향을 평균해
     # 버리면 운용상 가장 중요한 양이 사라진다.
     dsplit = {s: {1: [], -1: []} for s in bench.ids}
+    # 짝 구동(--mirror)일 때의 주행 방향별 합계. 방향은 cmd1 의 부호로 정한다
+    # (20260814 §6: id=1 = 오른쪽, +rpm = 전진).
+    pair = {1: [], -1: []}
+    mirrored = bench.ids == (1, 2) and any(
+        m.get("cmd1", 0) * m.get("cmd2", 0) < 0 for m in drive_marks)
+    z26 = []
     for m in drive_marks:
         w, lg = seg_window(pico, bench, m)
         if not w:
             continue
+        zero = zero_at(anchors, (m["t_start"] + m["t_end"]) / 2)
+        z26.append(zero["gp26"])
+        amps = {}
         for sid in bench.ids:
             c = m[f"cmd{sid}"]
             if not c:
@@ -334,10 +458,15 @@ def cycle_report(pico: PicoLogger, bench: Bench, cyc: int,
                 follow[sid].append(st.mean(r))
             ch = CH_OF_ID[sid]
             amp = abs((chan_mean(w, ch) - zero[ch]) * LSB_A_CH[ch])
+            amps[sid] = amp
             dcur[sid].append(amp)
             dsplit[sid][1 if c > 0 else -1].append(amp)
-    rec = {"cycle": cyc, "t": round(bench.now(), 1), "gp26_zero": round(zero["gp26"], 2),
-           "v_bus": round(zero["gp26"] * V_PER_LSB, 4)}
+        if mirrored and len(amps) == 2:
+            pair[1 if m["cmd1"] > 0 else -1].append(amps[1] + amps[2])
+    # 영점은 이제 구간마다 다르다 — 대표값으로 구동 구간 영점의 평균을 쓴다.
+    g26 = st.mean(z26) if z26 else float("nan")
+    rec = {"cycle": cyc, "t": round(bench.now(), 1), "gp26_zero": round(g26, 2),
+           "v_bus": round(g26 * V_PER_LSB, 4)}
     for sid in bench.ids:
         rec[f"follow{sid}"] = st.mean(follow[sid]) if follow[sid] else float("nan")
         rec[f"i{sid}"] = st.mean(dcur[sid]) if dcur[sid] else float("nan")
@@ -351,6 +480,16 @@ def cycle_report(pico: PicoLogger, bench: Bench, cyc: int,
                              if neg and rec[f"ineg{sid}"] else float("nan"))
     if bench.ids == (1, 2):
         rec["ratio"] = (rec["i1"] / rec["i2"]) if rec["i2"] else float("nan")
+    if mirrored:
+        # 전진/후진 총전류 — 08-21 §8 은 단독 구동 값에서 이 짝을 *유도*했을 뿐
+        # 직접 구동해 잰 적이 없다. 실제 주행 배치에서의 값이 여기 들어간다.
+        fwd, rev = pair[1], pair[-1]
+        rec["i_fwd"] = st.mean(fwd) if fwd else float("nan")
+        rec["i_rev"] = st.mean(rev) if rev else float("nan")
+        rec["p_fwd"] = rec["i_fwd"] * rec["v_bus"]
+        rec["p_rev"] = rec["i_rev"] * rec["v_bus"]
+        rec["pair_asym"] = (rec["p_fwd"] / rec["p_rev"]
+                            if rev and rec["p_rev"] else float("nan"))
     return rec
 
 
@@ -363,6 +502,9 @@ def print_cycle(rec: dict, prev: dict | None, ids: tuple) -> None:
     out.append(" | 방향비 " + "/".join(f"{rec[f'asym{s}']:.2f}" for s in ids))
     if "ratio" in rec:
         out.append(f" | 좌우비 {rec['ratio']:.3f}")
+    if "pair_asym" in rec:
+        out.append(f" | 전진 {rec['p_fwd']:.2f}W 후진 {rec['p_rev']:.2f}W "
+                   f"({rec['pair_asym']:.3f})")
     print("".join(out))
 
 
@@ -372,6 +514,11 @@ def flat_verdict(recs: list[dict], ids: tuple) -> None:
     두 점 비교는 완만한 장기 추세를 놓친다 — 사이클당 0.1% 씩 내려가도 이웃한 두 점은
     같아 보인다. 그리고 전류가 아니라 전력을 보는 이유는, 배터리가 내려가면 같은 마찰에도
     전류가 반비례로 부풀기 때문이다 (1 시간에 약 +1.2%). 그 인자를 빼야 마찰만 남는다.
+
+    판정은 **동등성 검정**이다 — 기울기의 2σ 밴드 전체가 문턱 안에 들어와야 평탄이라고
+    부른다. 예전 기준(`|기울기| < 문턱` **이고** `2σ 안`)은 두 조건이 서로 반대로 당겼다:
+    잔차가 작을수록 `2σ` 가 좁아져, 기울기 0.05 %/사이클짜리 아주 깨끗한 런이 오히려
+    "아직 감소 (유의)" 로 찍혔다.
     """
     n = len(recs)
     if n < 5:
@@ -382,7 +529,7 @@ def flat_verdict(recs: list[dict], ids: tuple) -> None:
     x, mx = list(range(w)), (w - 1) / 2
     sxx = sum((a - mx) ** 2 for a in x)
     print(f"\n  수렴 판정 — 마지막 {w} 사이클의 전력 추세 "
-          f"(기준: |기울기| < 0.2 %/사이클 이고 2σ 안)")
+          f"(기준: 기울기의 2σ 밴드 전체가 ±{FLAT_PCT} %/사이클 안)")
     flat = True
     for sid in ids:
         y = [r[f"p{sid}"] for r in tail]
@@ -391,11 +538,14 @@ def flat_verdict(recs: list[dict], ids: tuple) -> None:
         resid = [b - (my + slope * (a - mx)) for a, b in zip(x, y)]
         se = ((sum(r * r for r in resid) / (w - 2)) / sxx) ** 0.5 if w > 2 else float("inf")
         pct, spct = slope / my * 100, se / my * 100
-        sig = abs(slope) > 2 * se
-        ok = abs(pct) < 0.2 and not sig
+        ok = abs(pct) + 2 * spct < FLAT_PCT
         flat &= ok
-        verdict = "평탄" if ok else ("아직 " + ("감소" if pct < 0 else "증가")
-                                    + (" (유의)" if sig else " (크기 초과)"))
+        if ok:
+            verdict = "평탄"
+        elif abs(pct) - 2 * spct > FLAT_PCT:
+            verdict = "아직 " + ("감소" if pct < 0 else "증가")
+        else:
+            verdict = "판정 보류 — 2σ 밴드가 문턱을 걸친다"
         print(f"    id{sid}: {pct:+.3f} %/사이클 (±{spct:.3f}), "
               f"{w} 사이클 누적 {pct * (w - 1):+.2f}%  → {verdict}")
     print(f"  → {'수렴한 것으로 보인다.' if flat else '아직 변한다. 더 돌릴 것.'}")
@@ -410,6 +560,8 @@ def print_summary(cyc_recs: list[dict], ids: tuple) -> None:
         hdr += f"{'I' + str(sid) + '(A)':>9}{'P' + str(sid) + '(W)':>9}{'방향비' + str(sid):>10}"
     if "ratio" in cyc_recs[0]:
         hdr += f"{'좌우비':>9}"
+    if "pair_asym" in cyc_recs[0]:
+        hdr += f"{'전진(W)':>10}{'후진(W)':>10}{'전/후':>9}"
     print(hdr)
     for r in cyc_recs:
         line = f"C{r['cycle']:<6}{r['t']:>7.0f}{r['v_bus']:>7.2f}"
@@ -417,6 +569,8 @@ def print_summary(cyc_recs: list[dict], ids: tuple) -> None:
             line += f"{r[f'i{sid}']:>9.3f}{r[f'p{sid}']:>9.2f}{r[f'asym{sid}']:>10.3f}"
         if "ratio" in r:
             line += f"{r['ratio']:>9.3f}"
+        if "pair_asym" in r:
+            line += f"{r['p_fwd']:>10.2f}{r['p_rev']:>10.2f}{r['pair_asym']:>9.3f}"
         print(line)
     flat_verdict(cyc_recs, ids)
 
@@ -530,23 +684,22 @@ def reanalyze(tag: str, dmm: float | None) -> int:
             continue
         n = int(head[1:])
         if n not in cycles:
-            cycles[n] = {"rest": None, "drives": []}
+            cycles[n] = {"drives": []}
             order.append(n)
-        if m["kind"] == "rest":
-            cycles[n]["rest"] = m
-        else:
+        # 정지 구간은 cycle_report 가 bench.marks 전체에서 영점 기준점으로 직접 모은다.
+        if m["kind"] != "rest":
             cycles[n]["drives"].append(m)
 
     cyc_recs: list[dict] = []
     print()
     for n in order:
         c = cycles[n]
-        if not c["rest"] or not c["drives"]:
-            print(f"  C{n} — 영점 또는 구동 구간이 없어 건너뛴다")
+        if not c["drives"]:
+            print(f"  C{n} — 구동 구간이 없어 건너뛴다")
             continue
         # rec["t"] 는 bench.now() 에서 온다 — 재생 때는 그 사이클의 끝 시각으로 맞춘다.
         bench._t = c["drives"][-1]["t_end"]
-        rec = cycle_report(pico, bench, n, c["rest"], c["drives"])
+        rec = cycle_report(pico, bench, n, c["drives"])
         print_cycle(rec, cyc_recs[-1] if cyc_recs else None, ids)
         cyc_recs.append(rec)
     print_summary(cyc_recs, ids)
@@ -577,7 +730,18 @@ def main() -> int:
     ap.add_argument("--dwell", type=float, default=20.0, help="속도·방향 한 구간 s")
     ap.add_argument("--rest", type=float, default=6.0, help="사이클 시작 영점 s")
     ap.add_argument("--zero-sec", type=float, default=20.0, help="시작·종료 영점 s")
-    ap.add_argument("--one-way", action="store_true", help="양방향 교대를 끄고 + 방향만")
+    ap.add_argument("--one-way", action="store_true", help="양방향 교대를 끄고 한 방향만")
+    ap.add_argument("--dir-order", choices=("ccw", "cw"), default="ccw",
+                    help="첫 방향. ccw=+ 먼저(기존), cw=− 먼저(제조사 표 순서)")
+    ap.add_argument("--mirror", action="store_true",
+                    help="id=2 지령의 부호를 뒤집어 실제 주행 배치로 돌린다 — "
+                         "전진/후진 총부하를 직접 잰다 (id 1·2 동시 구동 전용)")
+    ap.add_argument("--rest-every", type=float, default=0.0,
+                    help="구동 구간이 이보다 길면 이 간격마다 --rest 초 정지를 끼운다. "
+                         "0=끔. 긴 구간의 영점 보간 기준점이 된다")
+    ap.add_argument("--vmin", type=float, default=0.0,
+                    help="정지 구간 버스전압(GP26) 하한 V. 밑돌면 중단한다. 0=끔. "
+                         f"구동 중에는 부하 강하 몫 {VMIN_LOAD_MARGIN} V 를 빼고 본다")
     ap.add_argument("--pico-hz", type=int, default=50)
     ap.add_argument("--dmm", type=float, default=None,
                     help="DMM 버스전압 V — 정지 구간 GP26 옆에 기록만 한다 (확정 아님)")
@@ -593,7 +757,15 @@ def main() -> int:
     if any(v <= 0 for v in speeds):
         print("!! --speeds 는 양수만. 방향은 --one-way 로 정한다.")
         return 1
-    dirs = (1,) if args.one_way else (1, -1)
+    first = 1 if args.dir_order == "ccw" else -1
+    dirs = (first,) if args.one_way else (first, -first)
+    if args.mirror and ids != (1, 2):
+        print("!! --mirror 는 id 1·2 를 함께 돌릴 때만 쓴다.")
+        return 1
+
+    def targets_of(tgt: int) -> dict[int, int]:
+        # 08-14 §6: 두 모터는 거울 장착이라 직진하려면 부호가 엇갈려야 한다.
+        return {s: (-tgt if (args.mirror and s == 2) else tgt) for s in ids}
 
     outdir = REPO / "test" / "logs"
     exist = [p.name for p in (outdir / f"breakin_{k}_{args.tag}.csv"
@@ -606,17 +778,28 @@ def main() -> int:
 
     # 소요 추정 — 램프는 200 rpm/0.3 s 계단이므로 전환량에 비례한다.
     seq = [d * v for v in speeds for d in dirs]
+    nsplit = (max(1, math.ceil(args.dwell / args.rest_every))
+              if args.rest_every > 0 else 1)
     cyc_sec, cur = args.rest, 0
     for tgt in seq:
         cyc_sec += math.ceil(abs(tgt - cur) / RAMP_STEP) * RAMP_DT + args.dwell
+        if nsplit > 1:
+            # 토막마다 0 까지 내려갔다 올라온다 — 정지 + 왕복 램프.
+            cyc_sec += (nsplit - 1) * (2 * math.ceil(abs(tgt) / RAMP_STEP) * RAMP_DT
+                                       + args.rest)
         cur = tgt
     cyc_sec += math.ceil(abs(cur) / RAMP_STEP) * RAMP_DT
     est = args.zero_sec * 2 + cyc_sec * args.cycles
 
-    print("감속기 브레이크인 — ⚠ 모터가 실제로 돈다. 무부하(벨트 미장착) 전제.")
-    print(f"  대상 id={list(ids)}   사이클당 지령 {seq}")
-    print(f"  구간 {args.dwell:.0f} s × {len(seq)} + 영점 {args.rest:.0f} s "
-          f"= 사이클 약 {cyc_sec:.0f} s")
+    print("감속기 브레이크인 — ⚠ 모터가 실제로 돈다. 지면에서 띄운 상태 전제.")
+    print(f"  대상 id={list(ids)}   사이클당 지령 {seq}"
+          + ("   [mirror] id2 는 부호 반대 — + 가 전진" if args.mirror else ""))
+    print(f"  구간 {args.dwell:.0f} s × {len(seq)}"
+          + (f" (각 {args.rest_every:.0f} s 마다 {nsplit} 토막으로 끊음)" if nsplit > 1 else "")
+          + f" + 영점 {args.rest:.0f} s = 사이클 약 {cyc_sec:.0f} s")
+    if args.vmin:
+        print(f"  저전압 중단 — 정지 {args.vmin:.2f} V / "
+              f"구동 {args.vmin - VMIN_LOAD_MARGIN:.2f} V")
     print(f"  {args.cycles} 사이클 예상 {est / 60:.1f} 분. 숫자가 평탄해지면 Ctrl-C 로 끊어도 된다.")
     print("  비상정지를 손 닿는 곳에 둘 것.\n")
 
@@ -638,7 +821,7 @@ def main() -> int:
         pico.start_stream()
         pico.start()
         time.sleep(1.0)
-        bench = Bench(pico, drivers)
+        bench = Bench(pico, drivers, vmin=args.vmin)
 
         print(f"\n[A] 시작 영점 — 정지 {args.zero_sec:.0f} s")
         bench.segment("A:zero_start", "rest", args.zero_sec)
@@ -652,19 +835,21 @@ def main() -> int:
                 break
             if not bench.rest(f"C{cyc}:zero", args.rest):
                 break
-            rest_mark = bench.marks[-1]
             dms: list[dict] = []
             for tgt in seq:
                 if bench.abort:
                     break
-                if not bench.drive(f"C{cyc}:{tgt:+d}", {s: tgt for s in ids}, args.dwell):
+                ok, ms = drive_split(bench, f"C{cyc}:{tgt:+d}", targets_of(tgt),
+                                     args.dwell, args.rest_every, args.rest)
+                dms.extend(ms)
+                if bench.log:
+                    lg = bench.log[-1]
+                    meas = "/".join(str(lg.get(f"rpm{s}")) for s in ids)
+                    print(f"    {tgt:>+5} rpm → 실측 {meas}")
+                if not ok:
                     break
-                dms.append(bench.marks[-1])
-                lg = bench.log[-1]
-                meas = "/".join(str(lg.get(f"rpm{s}")) for s in ids)
-                print(f"    {tgt:>+5} rpm → 실측 {meas}")
             if dms:
-                rec = cycle_report(pico, bench, cyc, rest_mark, dms)
+                rec = cycle_report(pico, bench, cyc, dms)
                 print_cycle(rec, cyc_recs[-1] if cyc_recs else None, ids)
                 cyc_recs.append(rec)
 
