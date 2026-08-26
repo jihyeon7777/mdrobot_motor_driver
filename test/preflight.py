@@ -274,7 +274,10 @@ def main() -> int:
             print(f"  - {m}")
     if not stop:
         print(f"\n진행 가능 ({len(checks) - len(stop) - len(warn)}/{len(checks)} 통과).")
-        print("    python3 test/current_validate.py --tag <MMDD>     # 약 7 분, 모터가 돈다")
+        print("    python3 test/wheel_direction_check.py --id 1      # 바퀴↔id↔채널↔방향 매핑")
+        print("    python3 test/breakin.py --tag <MMDD>              # 브레이크인·좌우/방향 측정")
+        print("    ⚠ current_validate.py 는 조치 #31(스톨 타이머)이 열려 있다 — 램프 동안")
+        print("      리셋 경로를 안 타 앞 구간 시각이 남고, 구간 첫 폴에서 오작동 중단한다")
     return 1 if stop else 0
 
 
