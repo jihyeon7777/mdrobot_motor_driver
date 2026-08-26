@@ -85,7 +85,24 @@ PICO_PORT = "/dev/serial/by-id/usb-MicroPython_Board_in_FS_mode_e6616408435d4437
 # 여기서는 |Δ| 만 쓰므로 부호는 결과에 영향을 주지 않지만, 채널 라벨은 핀 이름으로 유지한다.
 LSB_A_CH = {"gp27": -11.6534e-3, "gp28": 12.0289e-3}
 CH_OF_ID = {1: "gp28", 2: "gp27"}
-V_PER_LSB = 8.9815e-3    # GP26 raw → 버스전압 V (2026-08-19 §5)
+# GP26 raw → 버스전압.  raw = V_bus / (D × LSB_V) + b,  b = −Δ / LSB_V
+#   Δ = 15.7 mV — 피코 33번 AGND ↔ 분압기 하단 배터리−, 2026-08-26 DMM 직접 실측
+#   D = 11.131  — Δ 를 고정하면 점 하나마다 D 가 독립으로 나온다. 같은 날 DMM 두 점
+#                 (24.58 V / 24.83 V) 에서 11.1308 / 11.1321 로 0.012% 일치했다.
+# 실사용 상수 (raw − b) × 8.9160 mV 의 불확실도는 ±0.08% (DMM 분해능·짝 오차·Δ).
+# VREF 실측 정확도(±0.15%)는 D 와 LSB_V 의 곱에서 상쇄되므로 여기 안 들어온다.
+#
+# ⚠ b 는 **호스트와 배선에 묶인다.** 접지 오프셋이라 복귀전류 경로가 바뀌면 달라진다
+#   — 노트북에서는 Δ = 2.1 mV (b = −2.6 LSB, 20260821 sensing §1) 로 7.5 배 작다.
+#   호스트나 배선을 바꾸면 Δ 를 다시 재고 이 값을 갱신할 것. 안 재고 쓰면 26 V 에서
+#   0.2 V 어긋난다. 08-21 이전 세션 로그에 이 상수를 소급 적용하면 안 되는 이유이기도 하다.
+GP26_B_LSB = -19.60      # 접지 오프셋 절편 [LSB] — 파이 + 2026-08-26 확정 배선
+V_PER_LSB = 8.9160e-3    # (raw − GP26_B_LSB) 에 곱한다
+
+
+def bus_volts(raw: float) -> float:
+    """GP26 raw 평균 → 버스전압 [V]."""
+    return (raw - GP26_B_LSB) * V_PER_LSB
 
 H, D, C26, C27, C28, FL, SEQ = range(7)
 CH_IDX = {"gp26": C26, "gp27": C27, "gp28": C28}
@@ -252,7 +269,7 @@ class Bench:
         w = self.pico.samples[-25:]          # 50 Hz 기준 약 0.5 s
         if len(w) < 10 or self.abort:
             return
-        v = st.mean([x[C26] for x in w]) * V_PER_LSB
+        v = bus_volts(st.mean([x[C26] for x in w]))
         # 엄격한 문턱은 **실제 정지 구간**에서만 쓴다. `cmd == 0` 으로 판정하면 방향
         # 전환 램프가 0 을 지나는 순간에도 걸리는데, 그때 버스는 아직 회복 중이라
         # 정상 배터리에서도 오작동 중단이 난다 (2026-08-26 단계 4 에서 실제로 발생:
@@ -473,7 +490,7 @@ def cycle_report(pico: PicoLogger, bench: Bench, cyc: int,
     # 영점은 이제 구간마다 다르다 — 대표값으로 구동 구간 영점의 평균을 쓴다.
     g26 = st.mean(z26) if z26 else float("nan")
     rec = {"cycle": cyc, "t": round(bench.now(), 1), "gp26_zero": round(g26, 2),
-           "v_bus": round(g26 * V_PER_LSB, 4)}
+           "v_bus": round(bus_volts(g26), 4)}
     for sid in bench.ids:
         rec[f"follow{sid}"] = st.mean(follow[sid]) if follow[sid] else float("nan")
         rec[f"i{sid}"] = st.mean(dcur[sid]) if dcur[sid] else float("nan")
@@ -682,6 +699,11 @@ def reanalyze(tag: str, dmm: float | None) -> int:
     pico, bench = ReplayPico(samples), ReplayBench(ids, log, marks)
     print(f"재분석 — tag={tag}, id={list(ids)}, Pico {len(samples)} 샘플, "
           f"모터 {len(log)} 사이클, 구간 {len(marks)} 개  (하드웨어 미접촉)")
+    # 전류는 로컬 영점 기준이라 세션과 무관하지만, 버스전압은 아니다.
+    print(f"  ⚠ v_bus 는 파이 + 2026-08-26 배선 상수 (raw {GP26_B_LSB:+.1f}) × "
+          f"{V_PER_LSB * 1e3:.4f} mV 로 환산한다.\n"
+          f"    다른 호스트·배선에서 딴 로그(예: 08-21 노트북)에 쓰면 26 V 에서 "
+          f"0.2 V 어긋난다. 전류·비 는 영향 없다.")
 
     cycles: dict[int, dict] = {}
     order: list[int] = []

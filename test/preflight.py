@@ -67,10 +67,13 @@ VOLT_REF_MD = 27.71
 # 모델(−0.150 V)도 양자화 폭 ±0.05 V 를 3 배 넘게 빗나가 **둘 다 기각**된다.
 # id=2 는 아직 경계선(−0.063 / −0.050 V)이라 갈리지 않았다 — 조치 #3/#11.
 VOLT_TRUE_REF = 28.80     # 8/11 DMM 앵커. 그 세션의 실제 버스전압 (참고용 과거 점)
-# GP26 raw → 버스전압. 20260819 §5 에서 D = 11.192 로 확정된 값이고 `breakin.py:73` 과
-# 같은 자다. 예전 0.009131 은 DIV_RATIO 11.3310(ADC 정착 오차가 섞인 값) 기준이라
-# 1.64% 높게 읽혔다 — DMM 과 나란히 놓을 때 25 V 에서 0.4 V 어긋난다.
-VOLT_GP26_V = 8.9815e-3
+# GP26 raw → 버스전압. `breakin.py` 와 같은 자다 (2026-08-26 확정).
+#   V_bus = (raw − b) × 8.9160 mV,  b = −19.60 LSB (= 접지 오프셋 Δ 15.7 mV)
+# Δ 를 DMM 으로 직접 재서 절편을 고정한 뒤 D 를 풀었다 — 그 전까지 D 와 b 는 좁은
+# 전압 구간에서 서로를 흉내내 갈리지 않았다 (20260819 의 b = −42.2 ± 49 LSB).
+# ⚠ b 는 호스트·배선에 묶인다. 노트북은 Δ = 2.1 mV 다 (20260821 sensing §1).
+VOLT_GP26_B = -19.60
+VOLT_GP26_V = 8.9160e-3
 
 checks: list[tuple[bool, str, bool]] = []
 
@@ -223,7 +226,7 @@ def check_pico(sec: float, rate: int) -> dict:
         sd = (sum((x - mean) ** 2 for x in v) / len(v)) ** 0.5
         stats[ch] = (mean, sd, min(v), max(v))
         if ch not in CAL:
-            vbus = mean * VOLT_GP26_V
+            vbus = (mean - VOLT_GP26_B) * VOLT_GP26_V
             print(f"      {ch}  raw {mean:8.2f}  σ {sd:5.2f}  범위 {min(v):.0f}~{max(v):.0f}"
                   f"   → 버스 {vbus:6.3f} V  (전압 채널)")
             print(f"      실제 버스전압 {vbus:.3f} V — 8/11 DMM 앵커 "
