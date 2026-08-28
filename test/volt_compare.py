@@ -14,10 +14,16 @@ Pico 에는 `C`(설정 출력) / `P<hz>` / `S`(스트리밍 시작) / `X`(정지
 약 10.1 ms 걸려 **전 표본이 overrun 으로 표시된다.** 50 Hz 에서는 0.8% 수준이다
 (2026-08-13 보고서 §6).
 
+전압 축은 **호스트에서 환산한다** — 2026-08-26 에 확정한 `(raw + 19.60) × 8.9160 mV`
+(20260826 sensing §1) 이고 `preflight.py` · `breakin.py` 와 같은 자다. 펌웨어의
+`#CFG div` 는 아직 옛 값이라(조치 #41 — 펌웨어 전압 환산에 절편 항이 없다) 참고로만
+함께 찍는다.
+
 기준값 앵커: 2026-08-11 보고서 §8 에서 멀티미터로 두 컨트롤러 입력단자를 찍어
 28.8 V 였을 때 `PID_VOLT_IN` 이 id=1 raw 279 / id=2 raw 285 였다. MD400 은 절대
 전압계로 못 쓰므로(같은 §8) 아래 두 모델로 참값을 역산해 대조한다. **1 점 앵커라
-게인/오프셋을 구분하지 못한다** — 2 점 대조 전까지 어느 모델도 확정이 아니다.
+게인/오프셋을 구분하지 못한다** — 그 미결은 MD400 쪽 모델(조치 #3/#11)로 남아 있다.
+**분압비 쪽은 08-26 에 Δ 직접 실측으로 닫혔으므로 이 앵커로 Pico 를 교정하지 않는다.**
 """
 
 from __future__ import annotations
@@ -47,6 +53,19 @@ PICO = BY_ID / "usb-MicroPython_Board_in_FS_mode_e6616408435d4437-if00"
 MD_OFFSET = {1: +0.90, 2: +0.30}      # 고정 오프셋 모델 (V 를 더한다)
 MD_GAIN = {1: 1.0323, 2: 1.0105}      # 비례 오차 모델 (곱한다)
 
+# GP26 raw → 버스전압.  V_bus = (raw − b) × 8.9160 mV,  b = −Δ / LSB_V
+#   Δ = 15.7 mV — 핀 33 AGND ↔ 분압기 하단 배터리−, 2026-08-26 DMM 직접 실측 → b = −19.60 LSB
+#   D = 11.131 — Δ 를 고정하면 DMM 점 하나마다 D 가 독립으로 나온다 (11.1308 / 11.1321)
+# 근거와 불확실도(±0.08%)는 `breakin.py` 의 같은 상수 주석과 20260826 sensing §1 에 있다.
+# ⚠ b 는 호스트·배선에 묶인다. 바꾸면 핀 35(VREF)와 핀 33(Δ)을 **함께** 다시 잴 것 (조치 #40).
+GP26_B_LSB = -19.60
+GP26_V_PER_LSB = 8.9160e-3
+
+
+def bus_volts(raw: float) -> float:
+    """GP26 raw → 버스전압 [V]. `breakin.py` · `preflight.py` 와 같은 자."""
+    return (raw - GP26_B_LSB) * GP26_V_PER_LSB
+
 
 def main() -> int:
     ap = argparse.ArgumentParser()
@@ -75,16 +94,19 @@ def main() -> int:
                 except ValueError:
                     pass
 
+    # 펌웨어가 자기 상수로 환산하면 얼마인지 — **대조용**이다. 실사용 축은 bus_volts().
     # #CFG 는 v_per_lsb 를 %.6f 로 찍는다. div 로 다시 만들면 반올림 손실이 없다.
-    v_per_lsb = cfg.get("lsb_v", 3.3 / 4095) * cfg["div"] if "div" in cfg \
+    fw_v_per_lsb = cfg.get("lsb_v", 3.3 / 4095) * cfg["div"] if "div" in cfg \
         else cfg.get("v_per_lsb", 9.1312e-3)
     scale_v = cfg.get("scale_v", 1.0)
     a_per_lsb = cfg.get("a_per_lsb", 12.029e-3)
     zero_gp28 = cfg.get("zero_gp28", 2048.0)
     zero_gp27 = cfg.get("zero_gp27", 2048.0)
     print(f"Pico  #CFG  div={cfg.get('div', float('nan')):.4f} "
-          f"v_per_lsb={v_per_lsb:.8f} scale_v={scale_v:.4f} "
+          f"v_per_lsb={fw_v_per_lsb:.8f} scale_v={scale_v:.4f} "
           f"zero_gp28={zero_gp28:.1f} zero_gp27={zero_gp27:.1f}")
+    print(f"      호스트 환산 (raw + {-GP26_B_LSB:.2f}) × {GP26_V_PER_LSB * 1e3:.4f} mV "
+          f"— 2026-08-26 확정, 이 값을 쓴다")
 
     if args.rate:
         pico.write(f"P{args.rate}\n".encode())
@@ -160,7 +182,8 @@ def main() -> int:
 
     # ── 분석 ────────────────────────────────────────────────────────────
     v_raw = [r[3] for r in rows]
-    volt = [x * v_per_lsb * scale_v for x in v_raw]
+    volt = [bus_volts(x) for x in v_raw]
+    volt_fw = [x * fw_v_per_lsb * scale_v for x in v_raw]
     flags = [r[8] for r in rows]
     seqs = [r[1] for r in rows]
     gaps = sum(1 for a, b in zip(seqs, seqs[1:]) if b != a + 1)
@@ -180,7 +203,15 @@ def main() -> int:
           f"창내극값 [{min(r[4] for r in rows)} … {max(r[5] for r in rows)}]")
     print(f"  전압  평균 {st.mean(volt):8.4f} V  σ {st.pstdev(volt) * 1000:5.1f} mV  "
           f"p-p {(max(volt) - min(volt)) * 1000:.0f} mV")
-    print(f"  동시 전류 GP28 {st.mean([(r[7] - zero_gp28) * a_per_lsb for r in rows]):+.3f} A / "
+    print(f"        (펌웨어 상수로는 {st.mean(volt_fw):.4f} V — 조치 #41 미반영)")
+    # 전류 채널 raw 를 그대로 찍는다. 영점 캡처(다음 세션 계획 §3.3)에서는 이게 결과
+    # 그 자체다 — 펌웨어 영점은 대기전류가 섞여 있어 기준으로 쓸 수 없다.
+    for lbl, idx in (("GP27(id=2)", 6), ("GP28(id=1)", 7)):
+        ch = [r[idx] for r in rows]
+        print(f"  {lbl} raw 평균 {st.mean(ch):9.3f}  σ {st.pstdev(ch):5.3f}  "
+              f"표준오차 {st.pstdev(ch) / len(ch) ** 0.5:.4f} LSB")
+    print(f"  동시 전류 (펌웨어 영점 기준) GP28 "
+          f"{st.mean([(r[7] - zero_gp28) * a_per_lsb for r in rows]):+.3f} A / "
           f"GP27 {st.mean([(r[6] - zero_gp27) * a_per_lsb for r in rows]):+.3f} A")
 
     print(f"\n{'=' * 68}\n2. MD400 PID_VOLT_IN(143)\n{'=' * 68}")
@@ -211,8 +242,10 @@ def main() -> int:
         print(f"  ── 8/11 §8 앵커로 보정한 추정 실제 버스전압 ≈ {ref:.3f} V "
               f"(추정치 폭 {max(est) - min(est):.3f} V)")
         print(f"  Pico 편차 = {vp - ref:+.3f} V  ({(vp - ref) / ref * 100:+.2f} %)")
-        print(f"  이 1 점에서 필요한 scale_v = {ref / vp:.4f}  "
-              f"(등가 div_ratio {cfg.get('div', float('nan')) * ref / vp:.4f})")
+        print("  ⚠ 이 앵커는 대조용이다 — 분압비는 08-26 에 Δ 직접 실측으로 D = 11.131")
+        print("     ± 0.019 로 닫혔고, MD400 내장계는 절대 전압계로 못 쓴다 (id=1 은")
+        print("     게인·오프셋 모델이 둘 다 기각됐다 — 조치 #3/#11). 여기서 scale_v 를")
+        print("     역산해 상수를 고치지 말 것.")
 
     if args.out:
         with open(args.out, "w", newline="") as f:
