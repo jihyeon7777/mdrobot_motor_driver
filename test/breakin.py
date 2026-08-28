@@ -121,6 +121,14 @@ HARD_STALL_RPM = 20      # 지령이 100 rpm 이상인데 실측이 이보다 �
 HARD_STALL_SEC = 3.0     # 이만큼 지속되면 중단 (전류만 먹고 안 도는 상태)
 SOFT_FOLLOW = 0.5        # 추종률이 이보다 낮으면 경고만 하고 계속 돈다
 
+# 구간 전환의 명령 쓰기 재시도. 폴링 루프가 read_monitor 실패를 3 회까지 관용하는 것과
+# 같은 정책이며, 그쪽에만 있고 쓰기 경로에 없어서 링크 과도현상 1 회가 런 전체를 끊었다
+# (08-28 coldpb, C2 진입에서 `short read: got 0 want 2`). ModbusClient._transact 가 매
+# 트랜잭션 앞에서 flush_input 을 부르므로 재시도에 묵은 바이트가 섞이지 않고, set_velocity·
+# enable 은 같은 값을 다시 쓰는 멱등 연산이라 재전송이 안전하다.
+WRITE_RETRY = 3          # 최초 시도 포함 횟수
+WRITE_RETRY_DT = 0.05    # 재시도 간격 s
+
 # 수렴 판정 문턱 — 전력 기울기 %/사이클. 2σ 밴드 전체가 이 안에 들어와야 평탄이다.
 FLAT_PCT = 0.2
 # 저전압 중단 — 구동 중에는 내부저항 강하가 섞이므로 문턱을 이만큼 낮춰 잡는다.
@@ -211,6 +219,7 @@ class Bench:
         self.abort: str | None = None
         self.check_stall = False
         self.slow_polls = {s: 0 for s in self.ids}
+        self.write_retries = {s: 0 for s in self.ids}
         self._stall_since = {s: None for s in self.ids}
         self.in_rest = False
         self._last_volt = 0.0
@@ -294,10 +303,22 @@ class Bench:
                 return False
         return True
 
+    def write_retry(self, sid: int, fn, *args) -> None:
+        """명령 쓰기를 WRITE_RETRY 회까지 재시도한다. 끝내 실패하면 예외를 그대로 올린다."""
+        for attempt in range(WRITE_RETRY):
+            try:
+                fn(*args)
+                return
+            except MdrobotError:
+                if attempt == WRITE_RETRY - 1:
+                    raise
+                self.write_retries[sid] += 1
+                time.sleep(WRITE_RETRY_DT)
+
     def set_cmd(self, targets: dict[int, int]) -> None:
         for sid, v in targets.items():
             if self.cmd[sid] != v:
-                self.drv[sid].set_velocity(v)
+                self.write_retry(sid, self.drv[sid].set_velocity, v)
                 self.cmd[sid] = v
 
     def ramp(self, targets: dict[int, int]) -> bool:
@@ -334,7 +355,7 @@ class Bench:
 
     # ---- 고수준
     def enable(self, sid: int) -> None:
-        self.drv[sid].enable()
+        self.write_retry(sid, self.drv[sid].enable)
         self.enabled[sid] = True
 
     def shutdown_axis(self, sid: int) -> None:
@@ -930,6 +951,9 @@ def main() -> int:
         if bench.slow_polls[sid]:
             print(f"  ※ id={sid}: 추종률 {SOFT_FOLLOW * 100:.0f}% 미만이던 폴 "
                   f"{bench.slow_polls[sid]} 회 (중단 사유는 아니다)")
+        if bench.write_retries[sid]:
+            print(f"  ※ id={sid}: 명령 쓰기 재시도 {bench.write_retries[sid]} 회 "
+                  f"— 링크 과도현상. 0 이 아니면 로그에 남길 것")
 
     volt_rows = volt_table(pico, bench, ids, args.dmm)
 
