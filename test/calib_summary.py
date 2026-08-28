@@ -34,7 +34,10 @@ CAL = {
     1: dict(ch="gp28", a_per_lsb=+12.0289e-3, zero=2060.63, label="id=1 (GP28, 우)"),
     2: dict(ch="gp27", a_per_lsb=-11.6534e-3, zero=2064.31, label="id=2 (GP27, 좌)"),
 }
-V_PER_LSB = 9.1312e-3          # GP26, DIV_RATIO 11.3310 (2026-08-13 적합)
+# 2026-08-28 확정. 08-13 적합값(9.1312 mV, D 11.3310, 절편 없음)은 절편을 기울기에
+# 흡수하고 있었다 — 08-26 이 Δ 를 직접 재서 축퇴를 풀었고 08-28 이 재배선 후 확인했다.
+GP26_B_LSB = -18.7
+V_PER_LSB = 8.913e-3           # (raw − GP26_B_LSB) 에 곱한다
 OLD_A_FW = 30.525e-3           # 교정 전 펌웨어 상수
 OLD_A_TEST = 9.768e-3          # 교정 전 test/ 스크립트 상수
 
@@ -110,7 +113,7 @@ def main() -> int:
             rec[f"id{u}_dlsb"] = "%+.2f" % dlsb
             rec[f"id{u}_pico_a"] = "%.4f" % pico
             rec[f"id{u}_md_a"] = "%.2f" % md if md is not None else ""
-            rec[f"id{u}_bus_v"] = "%.3f" % (gp26 * V_PER_LSB) if gp26 else ""
+            rec[f"id{u}_bus_v"] = "%.3f" % ((gp26 - GP26_B_LSB) * V_PER_LSB) if gp26 else ""
             # 교정 전 상수로 환산하면 얼마였는가 (부호 없이 크기만)
             rec[f"id{u}_old_fw_a"] = "%.4f" % (abs(dlsb) * OLD_A_FW)
             rec[f"id{u}_old_test_a"] = "%.4f" % (abs(dlsb) * OLD_A_TEST)

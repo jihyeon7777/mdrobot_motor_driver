@@ -40,7 +40,10 @@ LOGS = REPO / "test" / "logs"
 # 2026-08-14 DMM 교정 (보고서 20260814 §4)
 CAL = {1: dict(ch="gp28", a_per_lsb=+12.0289e-3, label="id=1 (GP28, 우)", short="id=1 우"),
        2: dict(ch="gp27", a_per_lsb=-11.6534e-3, label="id=2 (GP27, 좌)", short="id=2 좌")}
-V_PER_LSB = 9.1312e-3      # GP26, DIV_RATIO 11.3310
+# 2026-08-28 확정. 08-13 적합값(9.1312 mV, D 11.3310, 절편 없음)은 절편을 기울기에
+# 흡수하고 있었다 — 08-26 이 Δ 를 직접 재서 축퇴를 풀었고 08-28 이 재배선 후 확인했다.
+GP26_B_LSB = -18.7
+V_PER_LSB = 8.913e-3           # (raw − GP26_B_LSB) 에 곱한다
 NAN = float("nan")
 
 # 파일명이 규칙에서 벗어나는 세션
@@ -79,7 +82,7 @@ def load(tag: str, unit: int) -> dict | None:
         pts[key] = {"raw": raw, "sd": num(r, "raw_sd") or 0.0,
                     "rpm": num(r, "rpm_meas"), "dmm": num(r, "dmm_a"),
                     "md": num(r, "md_current"),
-                    "bus": (num(r, "gp26") or 0) * V_PER_LSB}
+                    "bus": ((num(r, "gp26") or 0) - GP26_B_LSB) * V_PER_LSB}
     if not zeros:
         return None
     zero = st.mean(zeros)
