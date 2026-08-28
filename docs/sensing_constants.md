@@ -98,10 +98,16 @@ raw 범위가 275 LSB 뿐이라 **기울기와 절편이 서로를 흉내 낸다
 |---|---|
 | `test/breakin.py` · `current_sweep.py` · `current_validate.py` · `estop_test.py` | `LSB_A_CH` |
 | `test/breakin.py` · `volt_compare.py` · `calib_compare.py` · `calib_summary.py` | `GP26_B_LSB` · `V_PER_LSB` |
+| `test/preflight.py` | ⚠ **`CAL` · `QUIET_A` · `REST_REF`** — 이름이 달라 `LSB_A_CH` grep 에 안 걸린다 |
 | `oroha_fw/pico/main.py` | `VREF_NOM` · `DIV_RATIO` · `GP26_B_LSB` · `SCALE_GP2{7,8}` · `SIGN_GP2{7,8}` · `SENSOR_VZERO` · `V_RAIL_REF` · `QUIET_GP2{7,8}` |
 | `oroha_fw/ros2/oroha_power/…/power_node.py` | 위와 같은 상수의 **독립 복사본** (ROS 파라미터). ⚠ 이 노드는 펌웨어 `#CFG` 를 무시한다 |
 
 `src/mdrobot`(Python)·`src/mdrobot_cpp`(C++)에는 계측 상수가 없다 — **미러링 대상이 아니다.**
+
+> ⚠ **상수 이름이 파일마다 다르다.** `LSB_A_CH` 로만 grep 하면 `preflight.py` 의 `CAL` 과
+> `power_node.py` 의 ROS 파라미터를 놓친다. 실제로 08-28 에 그렇게 놓쳤고, flash 뒤
+> preflight 를 돌려 대기전류가 부호 반대로 3 배 나오는 것을 보고서야 발견했다.
+> **값(12.0289 · 11.6534 · 9.1312 · 2060.63 · 2064.31)으로도 함께 grep 할 것.**
 
 ### 펌웨어 정합 검증
 
@@ -112,9 +118,18 @@ raw 범위가 275 LSB 뿐이라 **기울기와 절편이 서로를 흉내 낸다
 | 교정 상태의 `rail_corr` | **1.00010** (1.000 이어야 정합) |
 | 버스전압 호스트 대 펌웨어 | 작동 전 구간 **1 mV 이내** |
 
-### ⚠ 펌웨어 flash 는 언제 필요한가
+### 펌웨어 flash — ✅ 2026-08-28 완료
 
-**파일만 확정했고 flash 는 안 했다** (`test/pico_flash.py`). 무엇이 영향을 받는지 갈라 보면:
+`e724032` → 확정판. 기기가 저장소와 sha256 일치(23825 bytes, `9ce752a9e261ffb5`)하고
+`#CFG` 가 새 값을 보고한다. **`rail_corr` 이 1.0103 → 1.000** 이 됐다.
+
+⚠ `pico_flash.py --write` 는 **업로드 후 검증 단계에서 MemoryError 로 죽는다** — 읽기가
+`hexlify` 로 47.6 KB 를 한 번에 할당하는데 파일이 23.8 KB 로 커져 RAM 이 모자란다. **쓰기는
+성공한 뒤이므로 그 오류는 무해하다.** 다만 마지막 소프트 리셋을 못 하므로 **기기가 REPL 에
+멈춘다** — 정상 REPL 에서 Ctrl-D 를 보내 `main.py` 를 재시작시켜야 한다. 검증은 기기에서
+청크 단위로 sha256 을 돌리면 된다.
+
+무엇이 영향을 받는지 갈라 보면:
 
 | 경로 | flash 필요? |
 |---|---|
@@ -127,8 +142,8 @@ raw 범위가 275 LSB 뿐이라 **기울기와 절편이 서로를 흉내 낸다
 상쇄되던 규약에서 `V_RAIL_REF` 를 잡아 **1.0103 (허수 +1.0%)** 을 보내온다. 확정 펌웨어를
 올리면 교정 상태에서 **1.000** 이 된다.
 
-> **`oroha_power` 를 쓴다면 flash 할 것.** 안 쓴다면 급하지 않다 — 오늘 세션 전체가
-> 옛 펌웨어로 돌았고 측정에는 아무 영향이 없었다.
+> 오늘 세션 전체(13 런, DMM 절대 교정 포함)가 **옛 펌웨어로 돌았고 측정에는 아무 영향이
+> 없었다.** flash 는 `oroha_power` 의 `rail_corr` 경로 하나를 위한 것이다.
 
 ### ⚠ ROS 노드의 부호 버그 (2026-08-28 수정)
 
