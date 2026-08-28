@@ -99,6 +99,7 @@ raw 범위가 275 LSB 뿐이라 **기울기와 절편이 서로를 흉내 낸다
 | `test/breakin.py` · `current_sweep.py` · `current_validate.py` · `estop_test.py` | `LSB_A_CH` |
 | `test/breakin.py` · `volt_compare.py` · `calib_compare.py` · `calib_summary.py` | `GP26_B_LSB` · `V_PER_LSB` |
 | `oroha_fw/pico/main.py` | `VREF_NOM` · `DIV_RATIO` · `GP26_B_LSB` · `SCALE_GP2{7,8}` · `SIGN_GP2{7,8}` · `SENSOR_VZERO` · `V_RAIL_REF` · `QUIET_GP2{7,8}` |
+| `oroha_fw/ros2/oroha_power/…/power_node.py` | 위와 같은 상수의 **독립 복사본** (ROS 파라미터). ⚠ 이 노드는 펌웨어 `#CFG` 를 무시한다 |
 
 `src/mdrobot`(Python)·`src/mdrobot_cpp`(C++)에는 계측 상수가 없다 — **미러링 대상이 아니다.**
 
@@ -111,9 +112,37 @@ raw 범위가 275 LSB 뿐이라 **기울기와 절편이 서로를 흉내 낸다
 | 교정 상태의 `rail_corr` | **1.00010** (1.000 이어야 정합) |
 | 버스전압 호스트 대 펌웨어 | 작동 전 구간 **1 mV 이내** |
 
-⚠ **펌웨어는 파일만 확정했고 flash 는 안 했다** (`test/pico_flash.py`). 벤치 도구는 raw 에서
-자체 환산하므로 **분석은 flash 와 무관하게 확정 게인으로 돈다.** flash 가 바꾸는 것은
-`#CFG` 보고값, 스트림의 파생 전류, `oroha_power` ROS 노드다.
+### ⚠ 펌웨어 flash 는 언제 필요한가
+
+**파일만 확정했고 flash 는 안 했다** (`test/pico_flash.py`). 무엇이 영향을 받는지 갈라 보면:
+
+| 경로 | flash 필요? |
+|---|---|
+| **벤치 도구** (`breakin` 등) | **아니오.** `D,` 스트림은 **순수 raw** 이고 도구가 자체 환산한다 |
+| `E,` 엔지니어링 스트림 | 아니오 — **아무도 안 쓴다** |
+| `#CFG` 보고값 | 아니오 — 정보용. `power_node` 도 무시한다 |
+| **`#ZERO` 의 `rail_corr`** | ★ **예.** `power_node` 가 `Z` 를 보내고 그 값을 곱한다 |
+
+★ **`rail_corr` 이 유일한 실제 경로다.** 옛 펌웨어는 `QUIET_GP27` 이 음수라 대기분이
+상쇄되던 규약에서 `V_RAIL_REF` 를 잡아 **1.0103 (허수 +1.0%)** 을 보내온다. 확정 펌웨어를
+올리면 교정 상태에서 **1.000** 이 된다.
+
+> **`oroha_power` 를 쓴다면 flash 할 것.** 안 쓴다면 급하지 않다 — 오늘 세션 전체가
+> 옛 펌웨어로 돌았고 측정에는 아무 영향이 없었다.
+
+### ⚠ ROS 노드의 부호 버그 (2026-08-28 수정)
+
+`power_node.py` 는 `sign_gp27 = −1` 을 들고 있었다. 두 채널 raw 가 같은 방향으로 움직이는데
+한쪽에 −1 을 곱하므로, `i28 + i27` 로 내는 **총전류·총전력·`BatteryState.current` 가
+상쇄됐다**:
+
+```
+3000 rpm 상당:  옛  i28 +1.030 A  i27 −1.030 A  합 +0.000 A
+                새  i28 +1.030 A  i27 +1.030 A  합 +2.059 A
+```
+
+**08-15~08-21 배선 교정 이후 계속 이 상태였다.** 로봇 전력 텔레메트리가 실질적으로 못
+쓰는 값을 내고 있었다는 뜻이다.
 
 ### 펌웨어에서 함께 고친 것
 

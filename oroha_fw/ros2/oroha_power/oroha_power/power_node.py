@@ -69,23 +69,37 @@ class OrohaPowerNode(Node):
         d("diag_rate", 1.0)
         d("sync_window", 500)          # 최소값 필터 창 크기 (프레임)
 
-        # as-built 상수 (설계 문서 §13.0). 교정 후 여기만 고치면 된다.
-        # ⚠ 이 노드는 펌웨어 #CFG 를 무시한다(_meta 는 로깅만). 펌웨어 상수를 바꾸면 여기도 같이.
-        d("v_per_lsb", 9.1312e-3)      # LSB_V × DIV_RATIO(11.3310) — 2026-08-13 28.8 V 1 점 적합
+        # as-built 상수 — 2026-08-28 DMM 직렬 절대 교정으로 확정.
+        # **단일 출처는 docs/sensing_constants.md 다.** 고칠 때 test/ 7 개 파일과
+        # oroha_fw/pico/main.py 도 함께 고칠 것.
+        # ⚠ 이 노드는 펌웨어 #CFG 를 무시한다(on_meta 는 로깅만). #ZERO 로 갱신되는 것은
+        #   zero_gp2* 와 rail_corr 뿐이므로, 아래 게인·부호·분압은 여기서만 관리된다.
+        d("v_per_lsb", 8.913e-3)       # LSB_ADC 0.800781 mV × D 11.130 (VREF 3.280 실측)
+        # ⚠ 접지 오프셋 절편. 08-26 이 핀 33 Δ 를 직접 재서 D 와의 축퇴를 풀었다.
+        #   이 항이 없으면 버스전압이 전 구간 약 +167 mV 치우친다. 호스트·배선에 묶인 값이다.
+        d("gp26_b_lsb", -18.7)         # Δ 15.0 mV / LSB_ADC
         # ACS37030LLZATR-020B3 (±20 A, 3.3 V, 66 mV/A, 비-비율). 1.0 까지 ACS758
         # (26.4 mV/A)로 잘못 적혀 있어 2.54 배 과대했다 — 보고서 20260814 §7.
-        d("a_per_lsb", 12.21e-3)       # LSB_V ÷ 66.0 mV/A (공칭)
+        d("a_per_lsb", 12.133e-3)      # LSB_ADC 0.800781 mV ÷ 66.0 mV/A (공칭)
         d("scale_v", 1.0)
-        d("scale_gp28", 0.9852)   # 2026-08-14 DMM 15 점 → 실효 +12.029 mA/LSB
-        d("scale_gp27", 0.9544)   # 2026-08-14 DMM 14 점 → 실효 −11.653 mA/LSB
+        # 실효 게인 = a_per_lsb × scale = 11.44 mA/LSB (감도 70.0 mV/A). **양 채널 공통** —
+        # 채널별 적합의 0.42% 차는 掃引 재현폭(±2%)보다 작아 채택하지 않았다.
+        d("scale_gp28", 0.94289)
+        d("scale_gp27", 0.94289)
         d("sign_gp28", 1)
-        d("sign_gp27", -1)        # 센서 #2 IP 단자 역결선 — 보고서 20260814 §7
-        # 아래는 DMM 교정의 0 A 절편이다. ⚠ 펌웨어 #ZERO 가 오면 덮어쓰는데, 그 값은
-        # 정지 상태 raw 라 컨트롤러 대기전류(약 0.077 A)가 포함된다 — 상대 전류에는
-        # 맞고 절대 전류에는 아니다.
-        d("zero_gp28", 2060.63)
-        d("zero_gp27", 2064.31)
+        # ⚠ 2026-08-28 −1 → +1. 센서 #2 IP 역결선은 실재했으나 08-15~08-21 사이에 교정됐고
+        #   (20260821_sensing §4), 그 뒤로 이 노드는 i27 을 음수로 계산해 왔다. i28+i27 로
+        #   내는 총전류·총전력·BatteryState.current 가 상쇄돼 **실제의 약 1.6% 로 읽혔다.**
+        d("sign_gp27", 1)
+        # 아래는 2026-08-28 교정 회귀의 0 A 절편이다. ⚠ 펌웨어 #ZERO 가 오면 덮어쓰는데,
+        # 그 값은 정지 상태 raw 라 컨트롤러 대기전류(DMM 실측 0.080 A = 7.0 LSB)가
+        # 포함된다 — 상대 전류에는 맞고 절대 전류에는 아니다.
+        d("zero_gp28", 2033.974)
+        d("zero_gp27", 2035.257)
         # 펌웨어가 영점에서 역산한 레일 보정 계수 (조치 #18). #ZERO 로 갱신된다.
+        # ⚠ **펌웨어를 flash 하기 전에는 이 값이 허수다.** 옛 펌웨어는 QUIET_GP27 이 음수라
+        #   대기분이 상쇄되던 규약에서 V_RAIL_REF 를 잡아 약 +1.0% 를 걸어 온다. 08-28 확정
+        #   펌웨어를 올리면 교정 상태에서 1.000 이 된다. 그 전까지는 총전력이 +1% 높게 나온다.
         # ACS37030 이 비-비율이라 레일이 흔들리면 게인과 영점이 같이 움직인다 —
         # 레일 1% 면 전류 248 mA 다. 1.0 이면 2026-08-14 교정 시점과 같은 레일.
         d("rail_corr", 1.0)
@@ -266,7 +280,7 @@ class OrohaPowerNode(Node):
         stamp = rclpy.time.Time(seconds=int(t), nanoseconds=int((t % 1) * 1e9)).to_msg()
 
         rc = float(self.p("rail_corr"))
-        v = f["v"] * self.p("v_per_lsb") * self.p("scale_v") * rc
+        v = (f["v"] - self.p("gp26_b_lsb")) * self.p("v_per_lsb") * self.p("scale_v") * rc
         i28 = (f["gp28"] - self.p("zero_gp28")) * self.p("a_per_lsb") * self.p("scale_gp28") * self.p("sign_gp28") * rc
         i27 = (f["gp27"] - self.p("zero_gp27")) * self.p("a_per_lsb") * self.p("scale_gp27") * self.p("sign_gp27") * rc
 
