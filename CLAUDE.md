@@ -154,3 +154,9 @@ crc → codec → frame(순수 함수: 프레임 빌드·파싱) → transport(�
 `docs/manual/`에 파라미터 전표·트러블슈팅·안전 절차가 있다:
 [`python.md`](docs/manual/python.md) · [`cpp.md`](docs/manual/cpp.md) ·
 [`ros2.md`](docs/manual/ros2.md) · [`ros2_control.md`](docs/manual/ros2_control.md) (twin 모드 상세).
+
+전류·전압 계측 상수는 [`docs/sensing_constants.md`](docs/sensing_constants.md) 가 **단일
+출처**다 (2026-08-28 확정, 시험 종료). 게인 **11.44 mA/LSB** (양 채널) · 버스전압
+**`(raw + 18.7) × 8.913 mV`**. 상수가 `test/` 4~6 개 파일과 `oroha_fw/pico/main.py` 에
+복제돼 있으므로 **고칠 때 전부 함께 고칠 것.** ⚠ 08-28 이전 문서의 절대 전류·전력·좌우비는
+옛 게인 기준이다 (좌우비 −3.12% · id1 −4.90% · id2 −1.83% 소급).
