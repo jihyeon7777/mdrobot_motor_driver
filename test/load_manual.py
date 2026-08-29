@@ -842,30 +842,37 @@ def main() -> int:
         else:
             print(f"\n!! {type(e).__name__}: {e}")
     finally:
+        # ⚠ 이 블록 전체가 BaseException 을 삼킨다. Exception 만 잡으면 여기서 맞은
+        #   두 번째 Ctrl-C 가 finally 를 뚫고 나가 **모터를 못 세우거나 (①) 세션
+        #   로그를 통째로 잃는다 (②~).** 종료 경로는 끝까지 가는 것이 항상 옳다.
         # ① 모터 — 통신 왕복 6 회. 링크가 죽었으면 각 호출이 던질 수 있으므로 개별 try.
         for fn in ("stop", "torque_off", "disable"):
             for d in drivers.values():
                 try:
                     getattr(d, fn)()
-                except Exception:
+                except BaseException:
                     pass
         # ② 종료 영점 — 무통전 상태에서. 여기서 실패해도 아래는 계속 간다.
         try:
             if bench and not stop_flag["why"]:
+                # 이 창 동안 상태 줄이 멈춰 있어 다 끝난 것처럼 보인다 — 그래서
+                # 여기서 Ctrl-C 가 나온다. 남은 시간을 먼저 알린다.
+                say(f"[C] 종료 영점 {min(args.zero_sec, 10.0):.0f} s — 모터는 이미 꺼졌다. "
+                    f"저장은 이 다음이니 기다릴 것.")
                 z = zero_window(pico, bench, min(args.zero_sec, 10.0), "C:zero_end")
                 if z:
                     bench.marks.append(z["_mark"])
-        except Exception:
-            pass
+        except BaseException:
+            say("   (종료 영점 생략 — 저장은 계속한다)")
         for d in drivers.values():
             try:
                 d.close()
-            except Exception:
+            except BaseException:
                 pass
         try:
             pico.stop_stream()
             pico.align()
-        except Exception:
+        except BaseException:
             pass
 
     if bench is None:
