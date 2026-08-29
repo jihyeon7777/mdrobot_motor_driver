@@ -257,6 +257,7 @@ class DriveState:
         self.wd_fired = False
         self.rev_since = 0.0
         self.rev_zero_at: float | None = None   # 실측이 멎은 시각
+        self.rpm_meas = 0.0              # 직전 폴의 실측 rpm (id1, 로봇 기준 부호)
         self.events: list[tuple] = []
         self.cmd_now = 0.0
         self.locked = False              # 방향 확인 전에는 setpoint 를 못 올린다
@@ -288,8 +289,25 @@ class DriveState:
         elif key == "MARK":
             self.log(t, "mark", f"조작자 표식 t={t:.1f}")
 
+    def _moving_against(self, d: int) -> bool:
+        """새 방향 d 가 **지금의 움직임**과 반대인가.
+
+        ⚠ `self.dir != 0` 로 판정하면 안 된다. dir 은 '무엇을 지시했나' 이지 '기계가
+          어떻게 움직이고 있나' 가 아니다. 워치독이 걸렸거나 space 를 눌러 dir 이 0 이
+          되어도 기계는 아직 감속 중이라 굴러간다. 그 상태에서 반대 지령을 받으면
+          전환 대기를 건너뛰고 곧바로 역지령이 나간다 — 08-29 예행에서 실제로 났다
+          (워치독 59.34 → 후진 60.56, 그때 지령은 아직 +330 이었다).
+        """
+        if d == 0:
+            return False
+        if self.dir != 0 and d != self.dir:
+            return True
+        if abs(self.cmd_now) > ZERO_RPM_EPS and d * self.cmd_now < 0:
+            return True
+        return abs(self.rpm_meas) > ZERO_RPM_EPS and d * self.rpm_meas < 0
+
     def _aim(self, t: float, d: int, force: bool = False) -> None:
-        if d != 0 and self.dir != 0 and d != self.dir:
+        if self._moving_against(d):
             # 방향 전환 — 램프에 맡기지 않고 명시적으로 0 을 거친다. 지령 0 인
             # 순간에도 차체는 아직 굴러가고 있어서, 그대로 역지령을 주면 폐루프가
             # 잔여 운동량과 정면으로 싸운다 (전류 스파이크·슬립).
@@ -307,7 +325,8 @@ class DriveState:
         self.ramp.retarget(t, d * self.setpoint, self.setpoint)
         self.log(t, "state", {0: "정지", 1: "전진", -1: "후진"}[d] + f" {self.setpoint}")
 
-    def update(self, t: float, rpm_absmax: float) -> None:
+    def update(self, t: float, rpm_absmax: float, rpm_signed: float = 0.0) -> None:
+        self.rpm_meas = rpm_signed
         # 방향 전환: **실측이 멎은 뒤** dwell 만큼 더 유지하고 반대로 올라간다.
         # 시간이 아니라 실측을 1 차 조건으로 쓰는 이유는 지면 감속 시간이 표면·경사·
         # 적재로 달라지기 때문이다.
@@ -757,7 +776,9 @@ def main() -> int:
             base_pos = dict(bench.log[-1])
             t_start = bench.now()
             last_cmd, last_cmd_t, last_draw, last_align = 0, 0.0, 0.0, 0.0
-            rpm_absmax = 0.0
+            # poll() 은 루프 뒤쪽이라 첫 반복에는 아직 row 가 없다. 실측값은
+            # 폴 결과를 다음 반복으로 넘기는 변수로 들고 간다.
+            rpm_absmax, rpm_signed = 0.0, 0.0
 
             while True:
                 t = bench.now()
@@ -767,7 +788,7 @@ def main() -> int:
                 if kr.eof:
                     st.abort = "stdin EOF — 터미널이 닫혔다 (SSH 종료)"
 
-                st.update(t, rpm_absmax)
+                st.update(t, rpm_absmax, rpm_signed)
 
                 c = st.cmd_int(t)
                 if c != last_cmd and t - last_cmd_t >= CMD_DT:
@@ -777,6 +798,7 @@ def main() -> int:
                 bench.poll()
                 row = bench.log[-1]
                 rpm_absmax = max(abs(row.get(f"rpm{s}") or 0) for s in (1, 2))
+                rpm_signed = float(row.get("rpm1") or 0)   # id1 = 우측, + = 전진
 
                 ph = st.phase(t, rpm_absmax)
                 if t - last_align > ALIGN_DT:
