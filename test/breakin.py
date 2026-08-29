@@ -133,6 +133,10 @@ SKIP_SEC = 1.5           # 구간 앞 과도 버림
 HARD_STALL_RPM = 20      # 지령이 100 rpm 이상인데 실측이 이보다 작고
 HARD_STALL_SEC = 3.0     # 이만큼 지속되면 중단 (전류만 먹고 안 도는 상태)
 SOFT_FOLLOW = 0.5        # 추종률이 이보다 낮으면 경고만 하고 계속 돈다
+# 위 판정이 걸렸을 때 전류로 원인을 가른다. 기계 구속이면 컨트롤러가 밀어붙여 전류가
+# 높고, E-stop·전원 차단이면 구동 자체가 없어 0 이 된다. 무부하 공회전이 300 rpm 에서도
+# 0.3 A 대이고 대기전류가 0.08 A 이므로 그 사이에 문턱을 둔다 (20260829 §4.1).
+DRIVE_OFF_A = 0.15       # 실측 전류가 이보다 작으면 '구동 제거' 로 본다
 
 # 구간 전환의 명령 쓰기 재시도. 폴링 루프가 read_monitor 실패를 3 회까지 관용하는 것과
 # 같은 정책이며, 그쪽에만 있고 쓰기 경로에 없어서 링크 과도현상 1 회가 런 전체를 끊었다
@@ -282,12 +286,29 @@ class Bench:
                     if (time.monotonic() - self._stall_since[sid] > HARD_STALL_SEC
                             and not self.abort):
                         self.abort = (f"id={sid} {c} rpm 지령인데 실측 {m} — "
-                                      f"{HARD_STALL_SEC:.0f} s 이상 정지. 기계 확인 필요")
+                                      f"{HARD_STALL_SEC:.0f} s 이상 정지. "
+                                      f"{self._stall_why(row.get(f'cur{sid}'))}")
                 else:
                     self._stall_since[sid] = None
 
         if self.vmin:
             self._check_volt()
+
+    @staticmethod
+    def _stall_why(cur: float | None) -> str:
+        """정지 판정의 원인을 실측 전류로 가른다.
+
+        2026-08-29 에 운전자가 타이밍벨트 이상을 보고 비상정지했는데, 판정기가 실측 rpm 만
+        보고 '기계 확인 필요' 로 보고했다. 실제 로그는 전류가 0.9 A → 0.0 A 로 rpm 감쇠보다
+        **먼저** 빠지고 양 채널이 동시에 관성 코스트다운한 모양이라 기계 구속과 정반대였다.
+        전류를 함께 읽으면 그 자리에서 갈린다 (20260829 §4.1).
+        """
+        if cur is None:
+            return "원인 미상 — 전류를 못 읽었다"
+        if abs(cur) < DRIVE_OFF_A:
+            return (f"구동 출력이 없다 (전류 {cur:.2f} A) — E-stop·전원 차단·컨트롤러 "
+                    f"출력 차단 계열. 기계 구속이면 전류가 높게 나온다")
+        return f"기계 구속 의심 (전류 {cur:.2f} A) — 기계 확인 필요"
 
     def _check_volt(self) -> None:
         """GP26 으로 저전압 중단. MD400 내장계는 0.1 V 양자화라 이 용도로 못 쓴다
