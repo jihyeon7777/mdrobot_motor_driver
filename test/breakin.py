@@ -543,6 +543,10 @@ def cycle_report(pico: PicoLogger, bench: Bench, cyc: int,
             ch = CH_OF_ID[sid]
             amp = abs((chan_mean(w, ch) - zero[ch]) * LSB_A_CH[ch])
             amps[sid] = amp
+            # 구간별 값을 마크에 남긴다. 사이클 한 줄로 평균해 버리면 속도별 분해를 할
+            # 때마다 원시 스트림에서 영점 보간을 다시 걸어야 하고, 그러면 창 규칙이 미세하게
+            # 달라 사이클 값과 어긋난다 — 20260829 에 손으로 뽑았을 때 0.3% 였다.
+            m[f"amp{sid}"] = round(amp, 5)
             dcur[sid].append(amp)
             dsplit[sid][1 if c > 0 else -1].append(amp)
         if mirrored and len(amps) == 2:
@@ -1019,8 +1023,13 @@ def main() -> int:
             w.writerows(bench.log)
     if bench.marks:
         with kf.open("w", newline="") as f:
+            # amp{sid} 는 구동 구간에만 붙는다 (cycle_report 가 채운다) — 정지 구간은
+            # restval 로 빈칸이 된다. 이 컬럼이 있어야 속도별 분해가 CSV 한 줄 읽기가 되고,
+            # 사이클 값과 항상 정합이다 (같은 amp 를 평균한 것이므로).
             w = csv.DictWriter(f, fieldnames=["label", "kind", "t_start", "t_end"]
-                               + [f"cmd{s}" for s in ids], extrasaction="ignore")
+                               + [f"cmd{s}" for s in ids]
+                               + [f"amp{s}" for s in ids],
+                               extrasaction="ignore", restval="")
             w.writeheader()
             w.writerows(bench.marks)
     if cyc_recs:
