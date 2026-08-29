@@ -30,11 +30,12 @@
   길들임 정도의 좌우 차이가 전류 격차로 위장한다 — 8/15 가 "격차는 감속기에 있다"까지
   좁혀 놓은 결론이 도로 흐려진다.
 
-⚠ 전압은 여기서 확정하지 말 것
-  구동 중 버스 전압에는 부하 강하가 섞인다. 분압비(조치 #15·#26)에 쓸 수 있는 것은
-  **정지 구간(rest)** 의 GP26 뿐이고, 그나마 조치 #29(접지 오프셋)가 끝나기 전에는 점을
-  더 찍어도 재배선으로 무효가 된다. `--dmm` 은 그 정지 구간 값을 나중에 되짚을 수 있게
-  기록만 해 두는 용도다.
+⚠ 전압은 여기서 확정하지 말 것 — 다만 확인점으로는 쓴다
+  구동 중 버스 전압에는 부하 강하가 섞인다. 분압비에 쓸 수 있는 것이 **정지 구간(rest)** 의
+  GP26 뿐이라는 규칙은 그대로다. 조치 #15·#26·#29 는 08-21·08-26·08-28 에 종결됐고, 확정
+  상수는 `docs/sensing_constants.md` 가 단일 출처다 — `V_bus = (raw + 18.7) × 8.913 mV`.
+  `--dmm` 은 정지 구간 값 옆에 실측을 남겨 **그 상수를 확인**하는 용도다. 상수를 여기서 다시
+  정의하지는 않는다 — 그건 전용 교정(20260828_calib)의 몫이다.
 
 컨트롤러 설정 레지스터는 쓰지 않는다. 쓰기는 속도 지령과 enable/disable/torque_off 뿐이다.
 
@@ -667,8 +668,13 @@ def volt_table(pico, bench, ids: tuple, dmm: float | None) -> list[dict]:
             line += f"{str(r[f'volt{sid}']):>9}"
         print(line)
     if dmm is not None:
-        print(f"  DMM 기준 {dmm} V — **기록만 한다.** 조치 #29(접지 오프셋)가 "
-              f"끝나기 전에는 분압비 점으로 쓰지 말 것.")
+        vs = [bus_volts(r["gp26"]) for r in rows]
+        lo, hi = min(vs), max(vs)
+        off = 0.0 if lo <= dmm <= hi else (dmm - hi if dmm > hi else dmm - lo)
+        print(f"  DMM {dmm:.3f} V ↔ GP26 환산 {lo:.3f}~{hi:.3f} V "
+              f"(정지 구간 {len(rows)} 개 · 런 중 드리프트 {hi - lo:.3f} V)")
+        print(f"    확정 상수 대비 편차 {off:+.3f} V — 확인점이다. 편차가 드리프트 폭보다 "
+              f"작으면 그 이상의 정밀도를 주장하지 말 것. 상수 재정의는 전용 교정의 몫")
     return rows
 
 
@@ -811,7 +817,8 @@ def main() -> int:
                          f"구동 중에는 부하 강하 몫 {VMIN_LOAD_MARGIN} V 를 빼고 본다")
     ap.add_argument("--pico-hz", type=int, default=50)
     ap.add_argument("--dmm", type=float, default=None,
-                    help="DMM 버스전압 V — 정지 구간 GP26 옆에 기록만 한다 (확정 아님)")
+                    help="DMM 버스전압 V — 정지 구간 GP26 과 대조해 확정 상수를 확인한다 "
+                         "(상수 재정의는 전용 교정의 몫)")
     ap.add_argument("--reanalyze", action="store_true",
                     help="저장된 로그만으로 사이클 표를 다시 낸다. 하드웨어를 건드리지 않는다")
     args = ap.parse_args()
