@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""수동 부하 시험 — 로봇을 **지면에 내려놓고** 전진/후진만 수동 조종하며 계측한다.
+"""수동 부하 시험 — 로봇을 **지면에 내려놓고** 수동 조종하며 계측한다.
+
+측정하는 것은 전진/후진뿐이다. 좌/우 제자리 선회는 **시험 장소까지 이동**하기 위한
+것이고, 시험 국면에서는 아예 거부된다 (구간이 오염된다).
 
 ⚠⚠ 이 스크립트는 저장소에서 **유일하게 접지 상태를 전제**한다. 다른 모든 주행
     스크립트(`breakin.py` 포함)는 "지면에서 띄움"을 전제하므로 섞어 쓰지 말 것.
@@ -17,14 +20,29 @@
 
 조작
   ↑ / w   전진        ↓ / s   후진        space / ESC   정지
+  ← / →   좌 / 우 제자리 선회 (`--turn-rpm` 고정. +/- 로 안 바뀐다)
   + / =   설정 rpm 증가            - / _   감소
   k       킵얼라이브 (아무것도 안 바꾸고 워치독만 연장)
   m       표식 — 노면이 바뀐 지점 등을 이벤트 로그에 남긴다
+  t / p / r  국면 — 이동 / 예열 / 시험
   q       정상 종료   Ctrl-C  중단
 
   **토글식이다.** 한 번 누르면 계속 간다. 다만 `--watchdog` 초 동안 아무 조작이
   없으면 자동으로 감속 정지한다. 키를 누르고 있으면 터미널 자동반복이 워치독을
-  계속 연장하므로, 떼면 멈추는 데드맨처럼도 쓸 수 있다.
+  계속 연장하므로, 떼면 멈추는 데드맨처럼도 쓸 수 있다. **5 s 유지가 필요한 시험
+  구동에서는 그렇게 쓰는 것이 정석이다** — `k` 를 따로 칠 일이 없어진다.
+
+  ⚠ ←/→ 의 좌/우 라벨은 08-14 §2 + 08-26 §2 에서 **유도한 값**이고 실물로 확인한
+    적이 없다 (화면 아이콘의 `?`). `targets_of` 주석 참조.
+
+국면 — 이동(move) / 예열(warm) / 시험(meas)
+  **정지 상태에서만 바뀌고, 바꾼 뒤에도 `--phase-rest` 만큼 더 정지해 있어야 한다.**
+  그 정지가 영점 앵커다 — 국면 경계에서 rest 구간이 둘로 쪼개지는데, 뒷조각이
+  MIN_REST_SEC 미만이면 `rest_dirty` 가 되어 시험 국면이 앵커 없이 시작한다. 그러면
+  `zero_at` 이 보간 대신 상수 클램프를 해서 20260821 §7 의 8~17% 과대가 돌아온다.
+
+  시험 국면의 **직진** 구동만 `kind="drive"` 가 된다. 이동·예열·선회 구동은 전부
+  `drive_x` 라 어느 분석기도 안 집는다 (필터가 정확 일치이기 때문이다).
 
 가감속
   컨트롤러의 SLOW_START/SLOW_DOWN 은 **쓰지 않는다** (0 이어야 하며 시작 시 읽어서
@@ -32,12 +50,28 @@
   닿는 기울기다. 방향 전환은 반드시 0 을 거치며, 실측 rpm 이 0 에 닿은 뒤에 반대로
   올라간다. 지면에서는 차체 질량 전체가 실려서 벤치와 관성이 다르다.
 
-산출물 (`test/logs/`)
+산출물 (`test/logs/`) — **런 도중 계속 디스크에 내려간다.** 종료 시 일괄 저장이 아니다.
   load_pico_<tag>.csv    원시 Pico 스트림 (50 Hz)
   load_motor_<tag>.csv   모터 폴 (cmd/rpm/cur/pos/status/volt)
-  load_marks_<tag>.csv   자동 분절 구간 — kind: rest / rest_dirty / drive / ramp
+  load_marks_<tag>.csv   자동 분절 구간 — kind: rest / rest_dirty / drive / drive_x / ramp
   load_events_<tag>.csv  조작 이벤트 (수동 런은 이게 없으면 재현이 안 된다)
-  load_volt_<tag>.csv    정지 구간 전압
+  load_volt_<tag>.csv    정지 구간 전압 (파생 요약이라 종료 시 1 회)
+
+  종료할 때 pico 와 marks 만 다시 쓴다 — pico 는 최종 align 오프셋을, marks 는
+  구간별 `amp1`/`amp2` 를 얹기 위해서다. `.tmp` + `os.replace` 라 실패해도
+  스트리밍본이 남는다.
+
+  ⚠ **pico CSV 의 `t` 는 런 중에는 잠정값이다.** `align()` 이 30 s 마다
+    `offset = min(host_t - dev_t)` 를 다시 계산해 과거 행의 t 를 소급 이동시킨다.
+    그래서 `host_t`/`dev_t` 를 함께 남긴다 — 재작성 전에 프로세스가 죽어도
+
+        offset = min(host_t - dev_t);   t = dev_t + offset
+
+    로 완전히 재구성된다. `--replay --tag <tag>` 가 그 복구를 해 준다.
+
+하드웨어 없이 확인하기
+  python3 test/load_manual.py --self-test          # 순수 로직 (터미널도 불필요)
+  python3 test/load_manual.py --replay --tag <t>   # 저장된 로그로 요약 재생성
 
 계측 상수는 `breakin.py` 에서 **import 한다.** 복제하지 않는다 — 이미 test/ 4~6 개
 파일과 펌웨어에 흩어져 있어서 "고칠 때 전부 함께" 여야 하는 문제가 있다.
@@ -50,8 +84,10 @@ import csv
 import math
 import os
 import select
+import shutil
 import signal
 import sys
+import tempfile
 import termios
 import time
 import tty
@@ -61,7 +97,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from breakin import (  # noqa: E402  — sys.path 를 먼저 세워야 한다
     REPO, MD_PORT, PICO_PORT, PicoLogger, Bench, bus_volts, volt_table,
-    LSB_A_CH, C26, C27, C28, FL, SEQ,
+    LSB_A_CH, CH_OF_ID, CH_IDX, SKIP_SEC, H, D, C26, C27, C28, FL, SEQ,
+    zero_anchors, cycle_report, print_cycle,
+    ReplayPico, ReplayBench,
 )
 from mdrobot import SingleMotorDriver  # noqa: E402  — breakin 이 경로를 잡아 준다
 
@@ -75,30 +113,52 @@ CMD_QUANT = 5            # 지령 양자화 rpm — 이보다 작은 변화는 �
 
 # 코드에 박는 상한. --max-rpm 오타 하나가 폭주가 되는 것을 막는다.
 # 3000 rpm 은 감속기 출력 100 rpm 으로 바퀴 속도가 1 m/s 를 넘는다 (breakin.py:7).
-MAX_RPM_CEIL = 1500      # 넘기려면 --unsafe-max 를 따로 줘야 한다
+# 무부하 스윕(sweepa/b)이 300~3000 이라 대면 비교를 하려면 여기까지 열려 있어야 한다.
+# 대신 1500 을 넘기면 --wheel-circ 를 요구해 거리를 미터로 읽게 만든다.
+MAX_RPM_CEIL = 3000      # 넘기려면 --unsafe-max 를 따로 줘야 한다
+WHEEL_CIRC_REQ = 1500    # 이 이상을 상한으로 잡으면 --wheel-circ 필수
+TURN_RPM_CEIL = 600      # 제자리 선회 상한. 고속 선회는 로봇을 던지는 방식이다
 DECEL_MIN_S = 0.4        # 감속 시간 하한 — 더 급하면 회생 과전압 여지가 커진다
 
 ZERO_RPM_EPS = 30        # 이보다 작으면 '멎었다' 로 본다 (방향 전환·정지 판정)
 MIN_REST_SEC = 2.0       # 이보다 짧은 정지는 영점 기준점으로 안 쓴다
 ZERO_DIRTY_LSB = 8.0     # 시작 영점 대비 이 이상 벗어난 정지 구간은 rest_dirty
 ESC_HOLD_S = 0.15        # 미완성 escape 시퀀스를 이만큼 기다렸다 ESC 로 확정
+ESC_MAX = 32             # 이보다 긴 미완성 시퀀스는 쓰레기로 보고 ESC 로 확정한다
 DRAW_DT = 0.20           # 화면 갱신 5 Hz — stdout 이 느린 SSH 에서 블록될 수 있다
 ALIGN_DT = 30.0          # pico.align() 은 전 샘플을 훑는다. hot path 에 두지 않는다
+PUMP_DT = 0.25           # 증분 저장 주기 s — 디스크 I/O 를 제어 루프에서 떼어 놓는다
 
 VERIFY_RPM = 200         # 시작 방향 확인 속도 (감속기 출력 6.7 rpm — 손으로 잡힌다)
 VERIFY_SEC = 1.5
 
-# 화살표 escape 시퀀스에 나타나는 문자는 조작 키로 절대 쓰지 않는다: A B C D [ ~ 숫자
+# ⚠ 예전 규약("A B C D [ ~ 숫자를 조작 키로 쓰지 않는다")은 **불완전했다.** 터미널이
+#   보내는 escape 는 그것 말고도 많다 — F1~F4 는 SS3 (`ESC O P/Q/R/S`), SGR 마우스는
+#   `ESC [ <0;10;20 M`, 창크기 보고는 `ESC [ 8;24;80 t` 다. 옛 파서는 이것들을 조립하지
+#   못해 뒤 바이트를 조작 키로 흘렸다: **F2 = 종료, F4 = 후진, 마우스 클릭 = 표식.**
+#   지금은 parse_keys 가 CSI/SS3 를 통째로 삼키므로 예약 문자 목록 자체가 필요 없다.
 KEYMAP = {
     b"w": "UP", b"W": "UP", b"s": "DOWN", b"S": "DOWN",
     b" ": "STOP", b"+": "PLUS", b"=": "PLUS", b"-": "MINUS", b"_": "MINUS",
     b"q": "QUIT", b"Q": "QUIT", b"k": "KEEP", b"K": "KEEP",
     b"m": "MARK", b"M": "MARK", b"\x03": "ABORT",
+    b"t": "PH_MOVE", b"T": "PH_MOVE",      # 국면 — 이동
+    b"p": "PH_WARM", b"P": "PH_WARM",      # 국면 — 예열
+    b"r": "PH_MEAS", b"R": "PH_MEAS",      # 국면 — 시험
 }
-ARROW = {b"A": "UP", b"B": "DOWN"}
+# 화살표 4 종. ←/→ 는 제자리 선회다 (직진 키 w/s 처럼 a/d 를 쓸 수는 없다 —
+# 소문자라도 미완성 escape 잔재와 섞이면 화살표 꼬리와 구별이 안 된다).
+ARROW = {b"A": "UP", b"B": "DOWN", b"C": "RIGHT", b"D": "LEFT"}
 # 워치독을 연장하는 토큰 — '조작자가 지켜보고 있다'의 증거가 되는 것만.
 # 미인식 바이트는 갱신하지 않는다 (붙여넣기 잔재, 고양이가 밟은 키 등).
-LIVE_KEYS = {"UP", "DOWN", "STOP", "PLUS", "MINUS", "KEEP", "MARK"}
+# ⚠ 선회·국면 키가 빠지면 선회 중 2 s 마다 워치독이 오발한다.
+LIVE_KEYS = {"UP", "DOWN", "LEFT", "RIGHT", "STOP", "PLUS", "MINUS",
+             "KEEP", "MARK", "PH_MOVE", "PH_WARM", "PH_MEAS"}
+
+# 국면 — 이동(장소까지 주행) / 예열(열 정착) / 시험(측정). 시험 국면의 직진 구동만
+# kind="drive" 가 되어 분석기에 잡힌다. 나머지는 전부 기록만 되고 셈에서 빠진다.
+PHASE_OF = {"PH_MOVE": "move", "PH_WARM": "warm", "PH_MEAS": "meas"}
+PHASE_KO = {"move": "이동", "warm": "예열", "meas": "시험"}
 
 
 class Bail(Exception):
@@ -115,24 +175,49 @@ def parse_keys(buf: bytes) -> tuple[list[str], bytes]:
 
     ⚠ 해석에 실패한 escape 는 `ESC` 토큰이 되고, `ESC` 의 동작은 **정지**다.
       화살표 오해석의 최악 결과가 '멈춤' 이 되도록 안전한 쪽으로 퇴화시킨다.
+
+    ⚠⚠ CSI(`ESC [ … final`) 와 SS3(`ESC O final`) 를 **통째로 삼킨다.** 예전에는 화살표
+      세 바이트만 알아보고 나머지는 `ESC` + 뒤 바이트로 쪼갰는데, 뒤 바이트가 KEYMAP 에
+      걸리면 그대로 조작이 됐다. 실제로 열려 있던 구멍 셋:
+        F2  `ESC O Q`          → ESC(정지) + Q = **종료**
+        F4  `ESC O S`          → ESC(정지) + S = **후진**
+        마우스 `ESC [ <0;10;20 M` → … + M = **표식**
+      창크기 보고 `ESC [ 8;24;80 t` 의 final 이 `t` 라는 점도 국면 키 도입의 전제였다.
     """
     out: list[str] = []
-    i = 0
-    while i < len(buf):
+    i, n = 0, len(buf)
+    while i < n:
         b = buf[i:i + 1]
-        if b == b"\x1b":
-            if len(buf) - i < 3:
-                return out, buf[i:]          # 아직 완성 안 됨 — 다음 읽기까지 보류
-            if buf[i + 1:i + 2] == b"[" and buf[i + 2:i + 3] in ARROW:
-                out.append(ARROW[buf[i + 2:i + 3]])
-                i += 3
-                continue
-            out.append("ESC")                # ESC 로 시작하지만 화살표가 아니다
+        if b != b"\x1b":
+            tok = KEYMAP.get(b)
+            if tok:
+                out.append(tok)
             i += 1
             continue
-        tok = KEYMAP.get(b)
-        if tok:
-            out.append(tok)
+        if i + 1 >= n:
+            return out, buf[i:]              # 아직 완성 안 됨 — 다음 읽기까지 보류
+        c = buf[i + 1:i + 2]
+        if c == b"[":
+            # CSI: 파라미터(0x30~0x3F)·중간(0x20~0x2F) 바이트를 건너뛰고 final(0x40~0x7E).
+            j = i + 2
+            while j < n and 0x20 <= buf[j] < 0x40:
+                j += 1
+            if j >= n:
+                if n - i > ESC_MAX:          # 끝없는 쓰레기를 물고 있지 않는다
+                    out.append("ESC")
+                    i = n
+                    continue
+                return out, buf[i:]
+            out.append(ARROW.get(buf[j:j + 1], "ESC"))   # 미지의 final → 정지로 퇴화
+            i = j + 1
+            continue
+        if c == b"O":                        # SS3 — F1~F4. 3 바이트를 통째로 버린다
+            if i + 2 >= n:
+                return out, buf[i:]
+            out.append("ESC")
+            i += 3
+            continue
+        out.append("ESC")                    # ESC + 임의 문자 (Alt-키 등)
         i += 1
     return out, b""
 
@@ -238,96 +323,258 @@ class Ramp:
 
 
 # ────────────────────────────────────────────────────────────── 주행 상태
+AIM_KO = {("lin", 1): "전진", ("lin", -1): "후진",
+          ("rot", 1): "좌선회", ("rot", -1): "우선회"}
+
+
 class DriveState:
-    """조작 → 지령. 워치독과 방향 전환을 여기서 다룬다."""
+    """조작 → 지령. 워치독·방향 전환·축 전환·국면을 여기서 다룬다.
+
+    ⚠⚠ **축(axis) 커밋 지점은 두 곳뿐이다** — `update()` 의 pending 해소와, `_aim()` 의
+      즉시 경로 중 `d != 0` 인 경우. 다른 데서 `self.axis` 를 쓰면 안 된다.
+
+      주루프는 스칼라 `cmd_now` 를 `targets_of(c, axis)` 로 두 모터에 뿌린다. 3000 rpm
+      전진 중에 축만 먼저 `rot` 로 바꾸면, 감속 램프가 도는 동안 `cmd_now` 는 아직
+      +2800 인데 id2 지령이 −2800 → +2800 으로 **한 폴 만에 5600 rpm 점프**한다.
+      방향전환 보호가 막으려는 바로 그 사건이 반대편 바퀴에서 일어난다.
+
+      그래서 **정지(`d == 0`)는 축을 바꾸지 않는다.** `targets_of(0, *)` 는 두 축에서
+      같고, 감속 램프는 떠나는 축의 부호를 그대로 유지해야 한다.
+    """
 
     def __init__(self, a) -> None:
-        self.setpoint = a.rpm            # + / - 로 바뀌는 설정 속도 (양수)
+        self.setpoint = a.rpm            # + / - 로 바뀌는 직진 설정 속도 (양수)
+        self.turn_rpm = a.turn_rpm       # 선회 속도. ⚠ + / - 로 바뀌지 않는다
         self.max_rpm = a.max_rpm
         self.step = a.step
         self.wd = a.watchdog
         self.wd_hard = a.watchdog_hard
         self.dwell = a.reverse_dwell
+        self.phase_rest = a.phase_rest
         self.ramp = Ramp(a.accel, a.decel)
-        self.dir = 0                     # -1 / 0 / +1  (로봇 기준, + = 전진)
-        self.pending = 0                 # 방향 전환 대기 중인 목표 방향
+        self.axis = "lin"                # "lin" 직진 / "rot" 제자리 선회
+        self.dir = 0                     # -1 / 0 / +1  (+ = 전진 또는 좌선회)
+        self.pending: tuple[str, int] | None = None   # 전환 대기 중인 (축, 방향)
         self.last_input = 0.0
         self.quit = False
         self.abort: str | None = None
+        self.stopping: str | None = None      # 소프트 정지 사유 (감속을 기다린다)
+        self.stop_fatal = True                # 그 사유가 '중단' 인가 '정상 종료' 인가
+        self.stop_deadline = 0.0
         self.wd_fired = False
         self.rev_since = 0.0
         self.rev_zero_at: float | None = None   # 실측이 멎은 시각
-        self.rpm_meas = 0.0              # 직전 폴의 실측 rpm (id1, 로봇 기준 부호)
+        self.rpm_lin = 0.0               # 직전 폴의 실측 직진분
+        self.rpm_rot = 0.0               # 〃 회전분
+        self.rpm_absmax = 0.0            # 〃 max(|rpm1|,|rpm2|) — 축 무관 '움직이나'
         self.events: list[tuple] = []
         self.cmd_now = 0.0
+        self.t_now = 0.0
         self.locked = False              # 방향 확인 전에는 setpoint 를 못 올린다
+        self.sphase = "move"             # 국면 — move / warm / meas
+        self.arm_at = 0.0                # 국면 전환 직후 구동 금지 시각
+        self.rest_since: float | None = None    # 기계 국면이 rest 로 들어간 시각
+        self.mech = "rest"               # 직전 update 의 기계 국면
+        self.turn_seen = False           # 첫 선회 turn_check 이벤트를 한 번만 남긴다
+        self.deny_at = -99.0             # 거부 이벤트 율제한 (자동반복이 로그를 채운다)
 
     def log(self, t: float, kind: str, detail: str) -> None:
         self.events.append((round(t, 3), kind, detail))
+
+    def deny(self, t: float, detail: str) -> None:
+        """거부 사유를 남기되 1 초에 한 번만. 키를 누르고 있으면 초당 30 번 들어온다."""
+        if t - self.deny_at >= 1.0:
+            self.deny_at = t
+            self.log(t, "deny", detail)
+
+    def speed_of(self, axis: str) -> int:
+        """축의 목표 속도. **램프 기울기(span)도 이 값으로 잡는다.**
+
+        ⚠ 3000 rpm 직진에서 선회로 넘어갈 때 span 을 선회 rpm(300)으로 잡으면
+          `rate = 300/1.5 = 200 rpm/s` 라 감속에 15 s 가 걸린다. 그런데 `update()` 의
+          안전망 `bail`(= decel*2 + dwell = 3.7 s)이 항상 먼저 이겨서, **아직 2000 rpm
+          으로 굴러가는 중에 역지령이 나간다.** 전환 보호가 통째로 무력화된다.
+          그래서 감속 쪽 span 은 언제나 **떠나는 축**(self.axis) 기준이다.
+        """
+        return self.turn_rpm if axis == "rot" else self.setpoint
 
     def on_key(self, t: float, key: str) -> None:
         if key in LIVE_KEYS:
             self.last_input = t
             self.wd_fired = False
+        if key == "ABORT":
+            self.abort = "조작자 Ctrl-C"
+            return
+        # ⚠ 소프트 정지가 걸린 뒤에는 조작을 받지 않는다. 안 막으면 화살표를 누르고
+        #   있는 손이 그대로 재가속시켜 정지 사유(공간 상한·접지 가드·세션 상한)가
+        #   통째로 무력화된다 — 키를 누른 채 쓰는 데드맨 운용에서 곧바로 터진다.
+        if self.stopping:
+            return
         if key == "QUIT":
             self.quit = True
-        elif key == "ABORT":
-            self.abort = "조작자 Ctrl-C"
         elif key in ("STOP", "ESC"):
-            self._aim(t, 0)
-        elif key == "UP":
-            self._aim(t, +1)
-        elif key == "DOWN":
-            self._aim(t, -1)
+            self._aim(t, self.axis, 0)
+        elif key in ("UP", "DOWN", "LEFT", "RIGHT"):
+            axis = "lin" if key in ("UP", "DOWN") else "rot"
+            d = +1 if key in ("UP", "LEFT") else -1
+            if axis == "rot" and self.sphase == "meas":
+                # 시험 구간 한가운데의 선회는 구간을 오염시킨다. 국면을 먼저 내리게 한다.
+                self.deny(t, "시험 국면에서는 선회 금지 — t 로 이동 국면 전환")
+                return
+            if t < self.arm_at:
+                self.deny(t, f"국면 전환 직후 영점 앵커 확보 중 — "
+                             f"{self.arm_at - t:.1f} s 남음")
+                return
+            self._aim(t, axis, d)
         elif key in ("PLUS", "MINUS"):
             lim = VERIFY_RPM if self.locked else self.max_rpm
             new = self.setpoint + (self.step if key == "PLUS" else -self.step)
             self.setpoint = max(self.step, min(lim, new))
-            self.log(t, "set", f"rpm={self.setpoint}")
-            if self.dir:
-                self._aim(t, self.dir, force=True)
+            if self.axis == "rot":
+                # 선회 속도는 --turn-rpm 고정이다. 여기서 setpoint 를 적용하면 선회 중에
+                # 지령이 3000 으로 튄다.
+                self.log(t, "set", f"rpm={self.setpoint} (선회 중 — 적용 안 됨)")
+            else:
+                self.log(t, "set", f"rpm={self.setpoint}")
+                if self.dir:
+                    self._aim(t, "lin", self.dir, force=True)
+        elif key in PHASE_OF:
+            self.try_phase(t, PHASE_OF[key])
         elif key == "MARK":
             self.log(t, "mark", f"조작자 표식 t={t:.1f}")
 
-    def _moving_against(self, d: int) -> bool:
-        """새 방향 d 가 **지금의 움직임**과 반대인가.
+    def _moving_against(self, axis: str, d: int) -> bool:
+        """새 지령 (axis, d) 가 **지금의 움직임**과 충돌하는가.
 
         ⚠ `self.dir != 0` 로 판정하면 안 된다. dir 은 '무엇을 지시했나' 이지 '기계가
           어떻게 움직이고 있나' 가 아니다. 워치독이 걸렸거나 space 를 눌러 dir 이 0 이
           되어도 기계는 아직 감속 중이라 굴러간다. 그 상태에서 반대 지령을 받으면
           전환 대기를 건너뛰고 곧바로 역지령이 나간다 — 08-29 예행에서 실제로 났다
           (워치독 59.34 → 후진 60.56, 그때 지령은 아직 +330 이었다).
+
+        ⚠⚠ **축이 바뀔 때는 투영을 보지 않는다.** 직진 중 회전분은 0 이고 선회 중
+          직진분은 0 이라, 새 축의 투영으로 판정하면 3000 rpm 으로 굴러가는 중에도
+          '멎었다' 로 읽힌다. 위와 정확히 같은 종류의 오독이다. 축 전환 판정은
+          축과 무관한 `rpm_absmax` 로 한다.
         """
         if d == 0:
             return False
+        if axis != self.axis:
+            return abs(self.cmd_now) > ZERO_RPM_EPS or self.rpm_absmax > ZERO_RPM_EPS
         if self.dir != 0 and d != self.dir:
             return True
         if abs(self.cmd_now) > ZERO_RPM_EPS and d * self.cmd_now < 0:
             return True
-        return abs(self.rpm_meas) > ZERO_RPM_EPS and d * self.rpm_meas < 0
+        v = self.rpm_lin if axis == "lin" else self.rpm_rot
+        return abs(v) > ZERO_RPM_EPS and d * v < 0
 
-    def _aim(self, t: float, d: int, force: bool = False) -> None:
-        if self._moving_against(d):
-            # 방향 전환 — 램프에 맡기지 않고 명시적으로 0 을 거친다. 지령 0 인
-            # 순간에도 차체는 아직 굴러가고 있어서, 그대로 역지령을 주면 폐루프가
-            # 잔여 운동량과 정면으로 싸운다 (전류 스파이크·슬립).
-            self.pending = d
+    def _aim(self, t: float, axis: str, d: int, force: bool = False) -> None:
+        # ⚠ 이미 같은 목표로 대기 중이면 아무것도 하지 않는다. 이 줄이 없으면 아래
+        #   대기 진입이 매 호출마다 rev_since/rev_zero_at 을 되돌려서, **키를 누르고
+        #   있는 동안 전환이 영원히 완료되지 않는다** (터미널 자동반복이 초당 30 번
+        #   들어온다). 데드맨처럼 키를 눌러 쓰는 운용에서 곧바로 터진다.
+        if self.pending == (axis, d) and not force:
+            return
+        if self._moving_against(axis, d):
+            # 전환 — 램프에 맡기지 않고 명시적으로 0 을 거친다. 지령 0 인 순간에도
+            # 차체는 아직 굴러가고 있어서, 그대로 역지령을 주면 폐루프가 잔여
+            # 운동량과 정면으로 싸운다 (전류 스파이크·슬립).
+            self.pending = (axis, d)
             self.dir = 0
             self.rev_since = t
             self.rev_zero_at = None
-            self.ramp.retarget(t, 0.0, self.setpoint)
-            self.log(t, "state", f"방향전환 대기 → {'전진' if d > 0 else '후진'}")
+            self.ramp.retarget(t, 0.0, self.speed_of(self.axis))   # ⚠ 떠나는 축 기준
+            self.log(t, "state", f"전환 대기 → {AIM_KO[(axis, d)]}")
             return
-        if d == self.dir and not force:
+        if d == 0:
+            # ⚠ 정지는 축을 바꾸지 않는다. pending 은 여기서 **취소된다** — space 를
+            #   눌렀는데 대기 중이던 역방향이 나중에 살아나면 안 된다.
+            changed = self.pending is not None or self.dir != 0 or abs(self.cmd_now) >= 1
+            self.pending = None
+            self.dir = 0
+            self.ramp.retarget(t, 0.0, self.speed_of(self.axis))
+            if changed or force:
+                self.log(t, "state", f"정지 {self.speed_of(self.axis)}")
             return
-        self.pending = 0
+        if axis == self.axis and d == self.dir and not force:
+            return
+        self.pending = None
+        self.axis = axis                 # ← 즉시 경로의 축 커밋 (d != 0 일 때만)
         self.dir = d
-        self.ramp.retarget(t, d * self.setpoint, self.setpoint)
-        self.log(t, "state", {0: "정지", 1: "전진", -1: "후진"}[d] + f" {self.setpoint}")
+        sp = self.speed_of(axis)
+        self.ramp.retarget(t, d * sp, sp)
+        self.log(t, "state", f"{AIM_KO[(axis, d)]} {sp}")
 
-    def update(self, t: float, rpm_absmax: float, rpm_signed: float = 0.0) -> None:
-        self.rpm_meas = rpm_signed
-        # 방향 전환: **실측이 멎은 뒤** dwell 만큼 더 유지하고 반대로 올라간다.
+    def settled_why(self, t: float) -> str | None:
+        """국면 전환을 막는 이유. `None` 이면 전환해도 된다.
+
+        ⚠ `dir == 0` 만 보면 안 된다 — 커밋 6319f94 가 고친 오독과 같다. 지령·실측·
+          대기 상태를 전부 보고, 그 위에 **영점 앵커용 정지 유지**까지 요구한다.
+        """
+        if self.pending:
+            return "전환 대기 중"
+        if self.dir != 0:
+            return "구동 중"
+        if abs(self.cmd_now) >= 1:
+            return f"감속 중 (지령 {self.cmd_now:+.0f})"
+        if self.rpm_absmax >= ZERO_RPM_EPS:
+            return f"아직 굴러간다 ({self.rpm_absmax:.0f} rpm)"
+        held = 0.0 if self.rest_since is None else t - self.rest_since
+        if held < self.phase_rest:
+            return f"영점 앵커 {self.phase_rest - held:.1f} s 남음"
+        return None
+
+    def try_phase(self, t: float, new: str) -> bool:
+        """국면 전환. 정지 상태에서만 받고, 전환 뒤에도 같은 시간만큼 정지를 요구한다.
+
+        전환 전후로 정지를 요구하는 이유는 **영점 앵커**다. 국면이 바뀌면 Segmenter 의
+        동일성이 깨져 rest 마크가 둘로 쪼개진다. 누르자마자 출발하면 뒷조각이
+        MIN_REST_SEC 미만이라 `rest_dirty` 가 되고, 시험 국면이 앞 앵커 하나만 가진
+        채로 시작한다. 그러면 `zero_at` 이 보간 대신 상수 클램프를 하게 되어
+        20260821 §7 의 8~17% 과대가 그대로 돌아온다.
+        """
+        if new == self.sphase:
+            self.log(t, "phase_deny", f"이미 {PHASE_KO[new]} 국면이다")
+            return False
+        why = self.settled_why(t)
+        if why:
+            self.log(t, "phase_deny", f"{PHASE_KO[new]} 전환 거부 — {why}")
+            return False
+        old, self.sphase = self.sphase, new
+        self.arm_at = t + self.phase_rest
+        self.log(t, "phase", f"{PHASE_KO[old]} → {PHASE_KO[new]}")
+        return True
+
+    def soft_stop(self, t: float, why: str, fatal: bool = True) -> None:
+        """감속 정지를 걸고 사유를 문다. 실제 종료는 주루프가 정지를 확인한 뒤 한다.
+
+        ⚠ 3000 rpm 에서 곧바로 빠져나가면 `finally` 의 `stop()` 이 약 40 ms 만 효력을
+          갖고 `torque_off()`(= output cut, coasts to a stop) 가 뒤따라 **활주**한다.
+          내리막 폭주에서는 그 활주가 가속이다.
+
+        ⚠ 여기서 `bench.abort` 를 세우면 안 된다 — 그것이 서는 순간 `zero_window` 가
+          즉시 반환해 `C:zero_end` 앵커를 잃는다. 주루프가 정지를 확인한 뒤에 세운다.
+        """
+        if self.stopping:
+            return
+        self.stopping = why
+        self.stop_fatal = fatal
+        self.pending = None
+        self._aim(t, self.axis, 0)
+        self.stop_deadline = t + self.ramp.decel_s * 2.0 + 1.0
+        self.log(t, "guard", f"소프트 정지 개시 — {why}")
+
+    def note_mech(self, t: float, ph: str) -> None:
+        """폴 직후의 기계 국면을 기록한다. 정지 지속 시간이 국면 전환 게이트가 된다."""
+        self.mech = ph
+        self.rest_since = (self.rest_since or t) if ph == "rest" else None
+
+    def update(self, t: float, rpm_absmax: float,
+               v_lin: float = 0.0, v_rot: float = 0.0) -> None:
+        self.t_now = t
+        self.rpm_absmax = rpm_absmax
+        self.rpm_lin, self.rpm_rot = v_lin, v_rot
+        # 전환: **실측이 멎은 뒤** dwell 만큼 더 유지하고 반대로 올라간다.
         # 시간이 아니라 실측을 1 차 조건으로 쓰는 이유는 지면 감속 시간이 표면·경사·
         # 적재로 달라지기 때문이다.
         # ⚠ dwell 을 '최대 대기' 로 쓰면 안 된다 — 감속에 걸리는 시간(설정/감속기울기)
@@ -339,21 +586,24 @@ class DriveState:
             settled = self.rev_zero_at is not None and t - self.rev_zero_at >= self.dwell
             bail = t - self.rev_since > self.ramp.decel_s * 2.0 + self.dwell
             if settled or bail:
-                d, self.pending = self.pending, 0
+                axis, d = self.pending
+                self.pending = None
+                self.axis = axis         # ← 정상 경로의 유일한 축 커밋 지점
                 self.dir = d
-                self.ramp.retarget(t, d * self.setpoint, self.setpoint)
+                sp = self.speed_of(axis)
+                self.ramp.retarget(t, d * sp, sp)
                 why = "실측 정지 확인" if settled else "⚠ 감속 타임아웃 (실측이 안 멎었다)"
-                self.log(t, "state",
-                         f"{'전진' if d > 0 else '후진'} {self.setpoint} 개시 — {why}")
+                self.log(t, "state", f"{AIM_KO[(axis, d)]} {sp} 개시 — {why}")
 
         # 워치독 1 단 — 감속 정지. 비상이 아니라 '주의 이탈' 이므로 급정지하지 않는다.
         idle = t - self.last_input
         if not self.wd_fired and idle > self.wd and (self.dir or self.pending):
             self.wd_fired = True
-            self.pending = 0
-            self._aim(t, 0)
+            self.pending = None
+            self._aim(t, self.axis, 0)
             self.log(t, "guard", f"워치독 {idle:.1f}s — 감속 정지")
-        # 워치독 2 단 — 감속조차 안 먹으면 출력을 끊는다.
+        # 워치독 2 단 — 감속조차 안 먹으면 출력을 끊는다. 소프트 정지를 태우지 않는다:
+        # 1 단 감속이 이미 실패했다는 뜻이라 더 기다릴 근거가 없다.
         if idle > self.wd_hard and rpm_absmax > ZERO_RPM_EPS:
             self.abort = f"워치독 경성 {idle:.1f}s — 조작 없이 계속 회전 중"
 
@@ -383,30 +633,47 @@ class Segmenter:
     kind 는 breakin 의 분석기와 호환되게 고른다:
       rest        `zero_anchors()` 가 영점 기준점으로 집는다 (kind 정확 일치 필터)
       rest_dirty  경사 유지전류로 오염된 정지 — 이름이 다르므로 자동 배제된다
-      drive       부하 측정의 본체
+      drive       부하 측정의 본체 — **시험 국면의 직진 구동만**
+      drive_x     이동·예열·선회 구동. 기록만 하고 어느 셈에도 안 들어간다
       ramp        가감속·전환 — 어느 분석기도 안 집는다. 기록만
+
+    ⚠ 정지는 국면과 무관하게 `rest` 다. 이동·예열 구간의 정지도 영점 앵커로 쓰는 것이
+      맞기 때문이다 — `zero_at` 은 앞뒤 앵커 사이 보간이라 앵커가 촘촘할수록 좋다.
+
+    `on_close` 를 주면 닫힌 마크가 그리로 간다. **`self.marks` 에 쌓아 두었다가 나중에
+    한꺼번에 옮기지 않는다** — 예전에는 주루프가 끝난 뒤 `bench.marks.extend(seg.marks)`
+    를 했는데, 그 줄이 try 블록 안이라 예외가 나면 구간 마크가 전멸했다.
     """
 
-    def __init__(self, min_rest: float = MIN_REST_SEC) -> None:
+    def __init__(self, min_rest: float = MIN_REST_SEC, on_close=None) -> None:
         self.min_rest = min_rest
+        self.on_close = on_close
         self.cur: dict | None = None
         self.n = 0
-        self.marks: list[dict] = []
+        self.marks: list[dict] = []      # on_close 가 없을 때만 쓴다 (자체시험용)
 
-    def feed(self, t: float, phase: str, cmd: float, zero_ref, pico) -> dict | None:
-        if self.cur and self.cur["_phase"] == phase and (
-                phase != "drive" or abs(self.cur["cmd1"] - round(cmd)) < CMD_QUANT):
+    def feed(self, t: float, phase: str, axis: str, sphase: str, cmd: float,
+             zero_ref, pico, pos: dict | None = None) -> dict | None:
+        if self.cur and self.cur["_phase"] == phase and self.cur["_axis"] == axis \
+                and self.cur["phase"] == sphase and (
+                phase != "drive" or abs(self.cur["_cmd"] - round(cmd)) < CMD_QUANT):
             return None
-        closed = self._close(t, zero_ref, pico)
+        closed = self._close(t, zero_ref, pico, pos)
         self.n += 1
         c = int(round(cmd))
-        self.cur = {"label": f"{'SRD'[('rest', 'ramp', 'drive').index(phase)]}{self.n:03d}"
+        kind = mark_kind(phase, axis, sphase)
+        pre = {"rest": "S", "ramp": "R", "drive": "D", "drive_x": "X"}[kind]
+        tg = targets_of(c, axis)         # ⚠ cmd2 = -c 를 여기 다시 적지 않는다
+        self.cur = {"label": f"{pre}{self.n:03d}"
                              + (f":{c:+d}" if phase != "rest" else ""),
-                    "kind": phase, "t_start": round(t, 4), "t_end": round(t, 4),
-                    "cmd1": c, "cmd2": -c, "_phase": phase}
+                    "kind": kind, "phase": sphase, "axis": axis,
+                    "t_start": round(t, 4), "t_end": round(t, 4),
+                    "cmd1": tg[1], "cmd2": tg[2],
+                    "_phase": phase, "_axis": axis, "_cmd": c,
+                    "_pos": dict(pos) if pos else None}
         return closed
 
-    def _close(self, t: float, zero_ref, pico) -> dict | None:
+    def _close(self, t: float, zero_ref, pico, pos: dict | None = None) -> dict | None:
         if not self.cur:
             return None
         m = self.cur
@@ -421,19 +688,31 @@ class Segmenter:
                 w = [s for s in pico.samples
                      if m["t_start"] <= pico.t(s) <= m["t_end"]]
                 if len(w) >= 10:
-                    for ch, idx in (("gp27", C27), ("gp28", C28)):
-                        mean = sum(s[idx] for s in w) / len(w)
+                    for ch in ("gp27", "gp28"):
+                        mean = sum(s[CH_IDX[ch]] for s in w) / len(w)
                         if abs(mean - zero_ref[ch]) > ZERO_DIRTY_LSB:
                             m["kind"] = "rest_dirty"
                             m["zero_note"] = f"{ch}{mean - zero_ref[ch]:+.1f}LSB"
                             break
-        m.pop("_phase", None)
-        self.marks.append(m)
+        # 구간별 실제 변위. 선회 라벨(좌/우)이 유도값이라 사후 확인 근거가 필요하고,
+        # --wheel-circ 를 곱하면 구간별 주행 거리가 된다.
+        base = m.pop("_pos", None)
+        if base and pos:
+            for sid in (1, 2):
+                a, b = base.get(f"pos{sid}"), pos.get(f"pos{sid}")
+                if a is not None and b is not None:
+                    m[f"dpos{sid}"] = round(b - a, 1)
+        for k in ("_phase", "_axis", "_cmd"):
+            m.pop(k, None)
+        if self.on_close:
+            self.on_close(m)
+        else:
+            self.marks.append(m)
         self.cur = None
         return m
 
-    def finish(self, t: float, zero_ref, pico) -> None:
-        self._close(t, zero_ref, pico)
+    def finish(self, t: float, zero_ref, pico, pos: dict | None = None) -> None:
+        self._close(t, zero_ref, pico, pos)
 
 
 # ────────────────────────────────────────────────────────────── 접지 전용 가드
@@ -452,13 +731,18 @@ class GroundGuard:
         self.stall_sec, self.grace, self.overspeed = stall_sec, grace, overspeed
         self.cruise_since: float | None = None
         self.stall_since: dict[int, float | None] = {1: None, 2: None}
-        self.over_since: float | None = None
+        # ⚠ id 별로 들고 있어야 한다. 스칼라 하나로 두면 id1 만 폭주할 때 id2 의 else
+        #   가지가 매 폴마다 타이머를 지워 지속 시간을 영영 못 채운다. 선회 중 한쪽
+        #   바퀴만 접지를 잃는 경우가 정확히 그 모양이다.
+        self.over_since: dict[int, float | None] = {1: None, 2: None}
 
     def check(self, t: float, phase: str, row: dict, cmd: float) -> str | None:
+        """⚠ `phase` 는 **기계 국면**(DriveState.phase) 이다. 회계용 kind 를 넘기면
+        이동·예열·선회 전 구간에서 이 가드가 통째로 해제된다."""
         if phase != "drive":
             self.cruise_since = None
             self.stall_since = {1: None, 2: None}
-            self.over_since = None
+            self.over_since = {1: None, 2: None}
             return None
         self.cruise_since = self.cruise_since or t
 
@@ -468,12 +752,12 @@ class GroundGuard:
                 continue
             # 오버스피드 — 내리막 폭주. breakin 에 없는 접지 전용 가드다.
             if abs(m) > abs(c) + self.overspeed:
-                self.over_since = self.over_since or t
-                if t - self.over_since > 1.0:
+                self.over_since[sid] = self.over_since[sid] or t
+                if t - self.over_since[sid] > 1.0:
                     return (f"id={sid} 지령 {c} rpm 인데 실측 {m} — 지령 초과 "
                             f"{self.overspeed} rpm 이 1 s 지속. 내리막 폭주 의심")
             else:
-                self.over_since = None
+                self.over_since[sid] = None
             # 스톨 — 순항 유예 뒤에만 무장한다
             if t - self.cruise_since < self.grace:
                 continue
@@ -496,9 +780,14 @@ def live_amps(pico, zero_ref) -> tuple[float, float]:
     w = pico.samples[-25:]
     if len(w) < 10 or zero_ref is None:
         return 0.0, 0.0
-    a1 = abs(sum(s[C28] for s in w) / len(w) - zero_ref["gp28"]) * LSB_A_CH["gp28"]
-    a2 = abs(sum(s[C27] for s in w) / len(w) - zero_ref["gp27"]) * LSB_A_CH["gp27"]
-    return a1, a2
+    # ⚠ 채널 매핑을 여기서 다시 적지 않는다 — breakin 의 CH_OF_ID 가 단일 출처다
+    #   (파일 독스트링: "계측 상수는 breakin 에서 import 한다. 복제하지 않는다").
+    out = []
+    for sid in (1, 2):
+        ch = CH_OF_ID[sid]
+        mean = sum(s[CH_IDX[ch]] for s in w) / len(w)
+        out.append(abs(mean - zero_ref[ch]) * LSB_A_CH[ch])
+    return out[0], out[1]
 
 
 def live_volt(pico) -> float:
@@ -506,57 +795,116 @@ def live_volt(pico) -> float:
     return bus_volts(sum(s[C26] for s in w) / len(w)) if len(w) >= 10 else 0.0
 
 
-STATE_ICON = {1: "▶전진", -1: "◀후진", 0: "■정지"}
+# ↺/↻ 뒤의 `?` 는 좌/우 라벨이 유도값이고 실물 미검증이라는 표시다 (targets_of 참조).
+STATE_ICON = {("lin", 1): "▶전진", ("lin", -1): "◀후진",
+              ("rot", 1): "↺좌선회?", ("rot", -1): "↻우선회?"}
+
+
+def term_width() -> int:
+    return max(60, shutil.get_terminal_size((120, 24)).columns - 1)
 
 
 def draw(st: DriveState, row: dict, seg: Segmenter, pico, zero_ref,
-         t: float, dpos: float) -> None:
-    icon = "↻전환" if st.pending else STATE_ICON[st.dir]
+         t: float, dpos: float, spin: float, args) -> None:
+    icon = "↻전환대기" if st.pending else STATE_ICON.get((st.axis, st.dir), "■정지")
     if st.wd_fired:
         icon = "⏱워치독"
+    if st.stopping:
+        icon = "◼정지중"
     a1, a2 = live_amps(pico, zero_ref)
     r1, r2 = row.get("rpm1"), row.get("rpm2")
     cur = seg.cur
     tail = ""
-    if cur:
+    if t < st.arm_at:                          # 국면 전환 직후 영점 앵커 확보 중
+        tail = f" [앵커 {st.arm_at - t:4.1f}s — 정지 유지]"
+    elif cur:
         dur = t - cur["t_start"]
-        tail = f" [{cur['label']} {dur:4.1f}s{' ✓' if cur['kind'] == 'drive' and dur >= 5 else ''}]"
+        ok = " ✓" if cur["kind"] == "drive" and dur >= args.min_drive else ""
+        goal = f"/{args.min_drive:.0f}" if cur["kind"] == "drive" else ""
+        tail = f" [{cur['label']} {dur:4.1f}{goal}s{ok}]"
+    dist = (f"{dpos / 900.0 * args.wheel_circ:+6.1f}m" if args.wheel_circ
+            else f"{dpos:+8.0f}")
     wd = max(0.0, st.wd - (t - st.last_input))
-    line = (f"{icon} 설정{st.setpoint:4d} 지령{st.cmd_now:+7.0f} "
+    line = (f"{PHASE_KO[st.sphase]} {icon} 설정{st.setpoint:4d} 지령{st.cmd_now:+7.0f} "
             f"실측{r1 if r1 is not None else '--':>6}/{r2 if r2 is not None else '--':>6} "
             f"I{a1:5.2f}/{a2:5.2f}A V{live_volt(pico):5.2f} "
-            f"WD{wd:4.1f}s t{t:6.0f}s d{dpos:+8.0f}{tail}")
-    sys.stdout.write("\r" + line[:118].ljust(118))
+            f"WD{wd:4.1f}s t{t:6.0f}s d{dist} r{spin:+7.0f}{tail}")
+    w = term_width()
+    sys.stdout.write("\r" + line[:w].ljust(w))
     sys.stdout.flush()
 
 
 def say(msg: str) -> None:
     """raw 모드에서는 개행에 \\r\\n 이 필요하다. 상태 줄을 지우고 찍는다."""
-    sys.stdout.write("\r" + " " * 118 + "\r" + msg + "\r\n")
+    sys.stdout.write("\r" + " " * term_width() + "\r" + msg + "\r\n")
     sys.stdout.flush()
 
 
 # ────────────────────────────────────────────────────────────── 유틸
-def targets_of(c: int) -> dict[int, int]:
-    """08-14 §6: id=1 = 우측이고 + 가 전진, id=2 = 좌측이라 거울 장착이다.
-    직진하려면 부호가 엇갈려야 한다. 지면 직진에 비-mirror 모드는 존재할 이유가
-    없으므로 옵션으로 두지 않는다."""
-    return {1: c, 2: -c}
+def targets_of(c: int, axis: str = "lin") -> dict[int, int]:
+    """지령 스칼라를 두 모터의 부호 있는 rpm 으로 푼다.
+
+    08-14 §2 가 id=1 을 **우측** 바퀴로 확정했고(단독 구동 육안 확인), 08-14 §6 과
+    08-26 §2 가 **거울 장착**을 확정했다 — id=1 은 `+` 가 전진, id=2 는 `+` 가 후진.
+
+      lin  {1:+c, 2:-c}   부호가 엇갈려야 직진한다
+      rot  {1:+c, 2:+c}   우측 전진 + 좌측 후진
+
+    ⚠ `rot` 의 `+` 를 **좌회전(반시계)** 이라 부르는 것은 위 두 문서에서 **유도한**
+      것이고 저장소에 명시된 적이 없다. 실물로 확인한 적도 없다 (그래서 화면 아이콘에
+      `?` 가 붙는다). 라벨이 틀려도 조작자가 반대 화살표를 누르면 되고 자료는 손상되지
+      않으므로 뒤집기 옵션은 두지 않는다. 첫 선회 때 `turn_check` 이벤트로 실측
+      Δpos 를 남기므로 사후에 문서로 확정할 수 있다.
+    """
+    return {1: c, 2: (c if axis == "rot" else -c)}
 
 
-def net_counts(row: dict, base: dict) -> float:
-    """순변위 counts. 30 counts/모터축 × 30:1 → 바퀴 1 회전 = 900 counts."""
+def proj(row: dict) -> tuple[float, float]:
+    """실측 rpm 을 (직진분, 회전분) 으로 투영한다. 부호 규약은 `targets_of` 와 같다."""
+    r1, r2 = row.get("rpm1"), row.get("rpm2")
+    if r1 is None or r2 is None:
+        return 0.0, 0.0
+    return (r1 - r2) / 2.0, (r1 + r2) / 2.0
+
+
+def counts_of(row: dict, base: dict) -> tuple[float, float]:
+    """(직진분, 회전분) counts. 30 counts/모터축 × 30:1 → 바퀴 1 회전 = 900 counts."""
     p1, p2 = row.get("pos1"), row.get("pos2")
     if p1 is None or p2 is None or not base:
-        return 0.0
-    return ((p1 - base["pos1"]) - (p2 - base["pos2"])) / 2.0
+        return 0.0, 0.0
+    d1, d2 = p1 - base["pos1"], p2 - base["pos2"]
+    return (d1 - d2) / 2.0, (d1 + d2) / 2.0
 
 
-def zero_window(pico, bench, seconds: float, label: str) -> dict:
-    """정지 영점을 잡고 채널 평균을 낸다. 구동을 걸지 않은 상태로 부른다."""
+def mark_kind(phase: str, axis: str, sphase: str) -> str:
+    """기계 국면(phase) 을 **회계용** kind 로 바꾼다.
+
+    ⚠ 이 값을 `GroundGuard` 나 `bench.in_rest` 에 넘기면 안 된다. 그쪽은 "지금 기계가
+      무엇을 하고 있나" 를 물으므로 `DriveState.phase()` 의 값을 그대로 받아야 한다.
+      여기서 나오는 것은 "이 구간이 셈에 들어가나" 라는 **장부상의 분류**다.
+
+    `drive` 는 시험 국면의 직진 구동에만 준다. 분석기가 정확 일치로 거르기 때문이다 —
+    `zero_anchors`/`volt_table` 은 `kind == "rest"`, 이쪽 요약은 `kind == "drive"`.
+    이동·예열·선회 구동은 전부 `drive_x` 로 묶어 어느 셈에도 안 들어가게 한다.
+    """
+    if phase != "drive":
+        return phase                    # rest 는 Segmenter._close 가 rest_dirty 로 재분류
+    return "drive" if (sphase == "meas" and axis == "lin") else "drive_x"
+
+
+def zero_window(pico, bench, seconds: float, label: str, pump=None,
+                sphase: str = "move") -> dict:
+    """정지 영점을 잡고 채널 평균을 낸다. 구동을 걸지 않은 상태로 부른다.
+
+    ⚠ 이 창 동안 주루프가 안 돌아 화면이 멈춘다. `pump` 를 받는 이유가 그것이다 —
+      08-29 에 잃은 세션이 정확히 종료 영점 창 도중이었다. 여기서도 계속 디스크에
+      내려야 창 안에서 죽어도 앞부분이 남는다.
+    """
     t0 = bench.now()
     while bench.now() - t0 < seconds and not bench.abort:
         bench.poll()
+        if pump:
+            pump()
     t1 = bench.now()
     # ⚠ s[D] 는 디바이스 시각이라 bench.now() 의 호스트 시각과 축이 다르다.
     # pico.t() 가 align() 오프셋을 얹어 두 축을 맞춘다 — 반드시 이쪽을 쓴다.
@@ -566,21 +914,202 @@ def zero_window(pico, bench, seconds: float, label: str) -> dict:
     return {"gp26": sum(s[C26] for s in w) / len(w),
             "gp27": sum(s[C27] for s in w) / len(w),
             "gp28": sum(s[C28] for s in w) / len(w),
-            "_mark": {"label": label, "kind": "rest", "t_start": round(t0, 4),
+            "_mark": {"label": label, "kind": "rest", "phase": sphase,
+                      "axis": "lin", "t_start": round(t0, 4),
                       "t_end": round(t1, 4), "cmd1": 0, "cmd2": 0,
                       "dur": round(t1 - t0, 3)}}
+
+
+# ────────────────────────────────────────────────────────── 증분 저장
+# 컬럼은 첫 행이 아니라 여기서 정한다 — bench.log 는 행마다 키 집합이 다르다
+# (volt{sid} 는 1 Hz, 통신 실패 시 rpm/cur/pos 가 통째로 빠진다).
+PICO_COLS = ["t", "host_t", "dev_t", "seq", "gp26_raw", "gp27_raw", "gp28_raw", "flags"]
+MOTOR_COLS = ["t"] + [f"{k}{s}" for s in (1, 2)
+                      for k in ("cmd", "rpm", "cur", "pos", "st", "volt")] \
+             + [f"st2_{s}" for s in (1, 2)]
+MARK_COLS = ["label", "kind", "phase", "axis", "t_start", "t_end", "cmd1", "cmd2",
+             "dur", "dpos1", "dpos2", "amp1", "amp2", "zero_kind", "zero_note"]
+EVENT_COLS = ["t", "kind", "detail"]
+
+
+class Sink:
+    """행 단위로 즉시 디스크에 내리는 CSV. `volt_monitor.py:249-258` 관용구를 쓴다.
+
+    **첫 write 까지 파일을 만들지 않는다.** 시동 점검이 실패해 곧바로 return 하는
+    경로에서 빈 CSV 가 남으면, 다음 시도가 `--tag` 충돌 검사에 걸려 조작자가 현장에서
+    태그를 새로 짜야 한다.
+
+    `buffering=1` + 행마다 `flush()` 다. `fsync` 는 하지 않는다 — 막으려는 것은
+    프로세스 죽음(08-29 §11.1)이지 정전이 아니고, SD 카드에 50 Hz 로 fsync 를 걸면
+    제어 루프가 그쪽에 잡아먹힌다.
+    """
+
+    def __init__(self, path: Path, cols: list[str] | None) -> None:
+        self.path, self.cols = path, cols
+        self.f = None
+        self.w = None
+        self.n = 0
+
+    def _open(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.f = self.path.open("w", newline="", buffering=1)
+        if self.cols:
+            self.w = csv.DictWriter(self.f, fieldnames=self.cols,
+                                    extrasaction="ignore", restval="")
+            self.w.writeheader()
+        else:
+            self.w = csv.writer(self.f)
+
+    def write(self, row) -> None:
+        if self.f is None:
+            self._open()
+        self.w.writerow(row)
+        self.f.flush()
+        self.n += 1
+
+    def close(self) -> None:
+        if self.f is not None:
+            try:
+                self.f.close()
+            except BaseException:
+                pass
+            self.f = None
+
+
+def pico_row(pico, s) -> dict:
+    """⚠ `t` 는 **잠정값**이다. `align()` 이 `offset = min(host_t - dev_t)` 를 전 표본에
+    대해 다시 계산해 스칼라 하나에 덮어쓰므로, 30 s 마다 과거 행의 t 가 소급해서
+    움직인다. 그래서 `host_t`/`dev_t` 를 같이 남긴다 (`estop_test.py:324` 선례) —
+    종료 시 재작성이 실패하더라도 스트리밍본만으로
+
+        offset = min(host_t - dev_t);  t = dev_t + offset
+
+    로 완전히 재구성할 수 있다."""
+    return {"t": f"{pico.t(s):.4f}", "host_t": f"{s[H]:.4f}", "dev_t": f"{s[D]:.6f}",
+            "seq": s[SEQ], "gp26_raw": s[C26], "gp27_raw": s[C27], "gp28_raw": s[C28],
+            "flags": s[FL]}
+
+
+def rewrite(path: Path, write_rows) -> bool:
+    """원자적 교체. 실패하면 **스트리밍본을 그대로 둔다** — 좋은 파일을 못 쓴 파일로
+    덮지 않는다. 08-29 에 잃은 것이 로그 한 세션이었다."""
+    tmp = path.with_suffix(".csv.tmp")
+    try:
+        with tmp.open("w", newline="") as f:
+            write_rows(f)
+        os.replace(tmp, path)            # 같은 디렉터리 = 같은 파일시스템 = 원자적
+        return True
+    except BaseException as e:
+        print(f"   ⚠ {path.name} 재작성 실패 ({type(e).__name__}: {e})\n"
+              f"     스트리밍본을 그대로 둔다. t 는 잠정값이니 "
+              f"--replay 로 복구할 것.")
+        try:
+            tmp.unlink(missing_ok=True)
+        except BaseException:
+            pass
+        return False
+
+
+def finalize(pico, bench, args) -> list[dict]:
+    """구간별 amp1/amp2 를 채우고 (국면 × 축) 요약을 낸다. 모터·시리얼을 안 건드린다.
+
+    ⚠ 계산을 복제하지 않고 `breakin.cycle_report` 를 **그대로 부른다.** 창 규칙
+      (SKIP_SEC 1.5 s 앞·0.05 s 뒤)과 영점 보간이 breakin 과 비트 단위로 같아야
+      무부하 표와 대면 비교가 성립한다. 부수효과로 `m["amp{sid}"]` 가 채워진다.
+
+    ⚠ (국면, 축) 으로 **나눠서** 넘긴다. 한 번에 주면 `mirrored` 판정이 cmd1*cmd2
+      부호로 돌아가 선회 구간이 전진/후진 짝에 섞여 든다.
+
+    ⚠ `cycle_report` 는 내부에서 `pico.align()` 을 부른다 — pico CSV 재작성보다
+      **먼저** 돌아야 한다.
+    """
+    groups: dict[tuple, list] = {}
+    for m in bench.marks:
+        if str(m.get("kind", "")).startswith("drive"):
+            key = (m.get("phase", "move"), m.get("axis", "lin"))
+            groups.setdefault(key, []).append(m)
+    recs = []
+    for i, (key, ms) in enumerate(sorted(groups.items())):
+        try:
+            rec = cycle_report(pico, bench, i, ms)
+        except BaseException as e:       # 로그가 짧아 창이 비면 여기서 갈릴 수 있다
+            print(f"   ⚠ {key} 요약 실패 ({type(e).__name__}: {e})")
+            continue
+        rec["phase"], rec["axis"], rec["n"] = key[0], key[1], len(ms)
+        recs.append(rec)
+    # 뒤쪽 앵커가 없는 구동은 zero_at 이 보간이 아니라 상수 클램프를 한다 —
+    # 20260821 §7 의 8~17% 과대가 조용히 섞이는 자리다. 표시해 둔다.
+    at = [a[0] for a in zero_anchors(pico, bench)]
+    for m in bench.marks:
+        if "amp1" in m or "amp2" in m:
+            mid = (m["t_start"] + m["t_end"]) / 2
+            m["zero_kind"] = "interp" if at and at[0] <= mid <= at[-1] else "extrap"
+    return recs
+
+
+def summarize(bench, recs: list[dict], args) -> None:
+    """구간 표와 (국면 × 축) 요약. `--replay` 도 이 함수를 그대로 쓴다."""
+    marks = bench.marks
+    drives = [m for m in marks if m.get("kind") == "drive"]
+    extra = [m for m in marks if m.get("kind") == "drive_x"]
+    rests = [m for m in marks if m.get("kind") == "rest"]
+    dirty = [m for m in marks if m.get("kind") == "rest_dirty"]
+    bar = "=" * 74
+    print(f"\n{bar}\n시험 구동 {len(drives)} 개 · 이동/예열/선회 구동 {len(extra)} 개 · "
+          f"깨끗한 정지 {len(rests)} 개 · 오염된 정지 {len(dirty)} 개\n{bar}")
+    if len(rests) < 2:
+        print("  ⚠⚠ 깨끗한 정지가 2 개 미만이다 — zero_at 이 보간이 아니라 상수 클램프를\n"
+              "      한다. 20260821 §7 의 8~17% 과대가 그대로 섞인다.")
+    if dirty:
+        print("  ⚠ 오염된 정지는 영점 기준점에서 자동 제외된다 (kind=rest_dirty).")
+        for m in dirty[:5]:
+            print(f"    {m['label']:<12} {m.get('zero_note', '')}")
+    if drives:
+        eff = args.min_drive - SKIP_SEC - 0.05
+        print(f"\n  시험 구간 — 판정 기준 {args.min_drive:.1f} s "
+              f"(앞 {SKIP_SEC} s + 뒤 0.05 s 를 버려 유효 {eff:.2f} s)")
+        print(f"  {'구간':<13}{'지령':>7}{'길이':>7}{'I1':>8}{'I2':>8}  {'영점':<7}판정")
+        for m in drives:
+            a1, a2 = m.get("amp1"), m.get("amp2")
+            f1 = f"{a1:8.3f}" if isinstance(a1, (int, float)) else f"{'--':>8}"
+            f2 = f"{a2:8.3f}" if isinstance(a2, (int, float)) else f"{'--':>8}"
+            zk = m.get("zero_kind", "?")
+            ok = "✓" if m["dur"] >= args.min_drive else (
+                f"— 짧다 (유효 {m['dur'] - SKIP_SEC - 0.05:.2f} s)")
+            print(f"  {m['label']:<13}{m['cmd1']:>7}{m['dur']:>7.1f}s{f1}{f2}  "
+                  f"{zk:<7}{ok}")
+        if any(m.get("zero_kind") == "extrap" for m in drives):
+            print("  ⚠ zero_kind=extrap 인 구간은 뒤쪽 영점 앵커가 없다 — 보간이 아니라\n"
+                  "    가장 가까운 앵커를 그대로 쓴 값이다. 드리프트를 뒤집어쓴다.")
+    if recs:
+        print("\n  국면 × 축 요약  (id1 = 우측 · id2 = 좌측)")
+        for r in recs:
+            print(f"  ── {PHASE_KO.get(r['phase'], r['phase'])} / "
+                  f"{'직진' if r['axis'] == 'lin' else '선회'} · 구간 {r['n']} 개")
+            try:
+                print_cycle(r, None, bench.ids)
+            except BaseException as e:
+                print(f"     (요약 출력 실패: {type(e).__name__}: {e})")
+        if any(r["phase"] == "warm" for r in recs) and any(
+                r["phase"] == "meas" for r in recs):
+            print("\n  ↑ 예열과 시험을 나란히 볼 것. 20260829 §11.4 의 '예열 교락' 이\n"
+                  "    남아 있으면 두 줄의 방향비가 서로 다르게 나온다.")
+    print("\n⚠ 이 로그는 **접지 상태**다. breakin_* (무부하) 와 같은 표에 넣지 말 것.")
 
 
 # ────────────────────────────────────────────────────────────── main
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="접지 상태 수동 부하 시험 — 전진/후진만, 수동 조종",
+        description="접지 상태 수동 부하 시험 — 측정은 전진/후진, 이동은 선회 포함",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     p.add_argument("--tag", required=True, help="로그 태그. 같은 태그가 있으면 거부한다")
     p.add_argument("--rpm", type=int, required=True,
                    help="초기 설정 rpm. 기본값을 두지 않는다 — 지면에서 무심코 실행되면 안 된다")
     p.add_argument("--max-rpm", type=int, default=None,
                    help="+ 키 상한. 생략하면 --rpm 과 같다 (올리려면 명시해야 한다)")
+    p.add_argument("--turn-rpm", type=int, default=300,
+                   help="제자리 선회 rpm. ⚠ +/- 로 바뀌지 않는 고정값이다 "
+                        f"(상한 {TURN_RPM_CEIL})")
     p.add_argument("--step", type=int, default=100, help="+/- 증감 폭 rpm")
     p.add_argument("--accel", type=float, default=2.0, help="0→설정 rpm 가속 시간 s")
     p.add_argument("--decel", type=float, default=1.5, help="설정 rpm→0 감속 시간 s")
@@ -590,10 +1119,22 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--reverse-dwell", type=float, default=0.7,
                    help="방향 전환 시 0 유지 상한 s (실측이 먼저 멎으면 즉시 통과)")
     p.add_argument("--zero-sec", type=float, default=20.0, help="시작·종료 영점 s")
+    p.add_argument("--phase-rest", type=float, default=3.0,
+                   help="국면 전환 전후로 요구하는 정지 유지 s (영점 앵커를 만든다)")
+    p.add_argument("--min-drive", type=float, default=5.0,
+                   help=f"분석 가능 판정 하한 s. 앞 {SKIP_SEC} s 는 버려지므로 "
+                        f"유효 시간은 이보다 그만큼 짧다")
     p.add_argument("--vmin", type=float, default=22.5, help="정지 구간 버스전압 하한 V")
-    p.add_argument("--max-sec", type=float, default=600.0, help="세션 최대 시간 s")
+    p.add_argument("--max-sec", type=float, default=1800.0, help="세션 최대 시간 s")
     p.add_argument("--max-counts", type=float, default=0.0,
-                   help="순변위 상한 counts (900 = 바퀴 1 회전). 0 = 끔")
+                   help="직진 순변위 상한 counts (900 = 바퀴 1 회전). 0 = 끔. "
+                        "주행 공간 예산이다 — 선회는 바닥을 소비하지 않으므로 세지 않는다")
+    p.add_argument("--max-spin", type=float, default=0.0,
+                   help="회전분 상한 counts. 0 = 끔. 공간 예산이 아니라 "
+                        "한쪽 바퀴가 접지를 잃은 폭주 선회 탐지용이다")
+    p.add_argument("--wheel-circ", type=float, default=None,
+                   help=f"바퀴 둘레 m — 거리를 미터로 환산한다. "
+                        f"--max-rpm 이 {WHEEL_CIRC_REQ} 를 넘으면 필수")
     p.add_argument("--stall-sec", type=float, default=4.0, help="스톨 판정 지속 s")
     p.add_argument("--stall-grace", type=float, default=1.5, help="순항 진입 후 스톨 무장 유예 s")
     p.add_argument("--overspeed", type=int, default=250, help="지령 초과 허용 rpm")
@@ -603,10 +1144,21 @@ def build_parser() -> argparse.ArgumentParser:
                    help="시작 저속 방향 확인을 건너뛴다 (권장하지 않는다)")
     p.add_argument("--unsafe-max", action="store_true",
                    help=f"--max-rpm 의 코드 상한 {MAX_RPM_CEIL} 을 푼다")
+    p.add_argument("--replay", action="store_true",
+                   help="저장된 load_* 로그만으로 요약을 다시 낸다. 하드웨어 미접촉")
+    p.add_argument("--dry-run", action="store_true",
+                   help="--replay 와 함께 — marks CSV 를 다시 쓰지 않는다")
+    p.add_argument("--self-test", action="store_true",
+                   help="순수 로직 자체 시험. 하드웨어·터미널 불필요")
     return p
 
 
 def main() -> int:
+    # ⚠ --self-test / --replay 는 --rpm 이 required 라 주 파서를 못 탄다. 먼저 가른다.
+    if "--self-test" in sys.argv[1:]:
+        return self_test()
+    if "--replay" in sys.argv[1:]:
+        return replay(sys.argv[1:])
     args = build_parser().parse_args()
     if args.max_rpm is None:
         args.max_rpm = args.rpm
@@ -618,8 +1170,25 @@ def main() -> int:
               f"3000 rpm 은 바퀴 속도 1 m/s 를 넘는다 — 지면에서 위험하다.\n"
               f"   정말 필요하면 --unsafe-max 를 함께 줄 것.")
         return 1
+    if not 1 <= args.turn_rpm <= TURN_RPM_CEIL:
+        print(f"!! --turn-rpm 은 1~{TURN_RPM_CEIL} 이다. "
+              f"제자리 선회는 고속에서 로봇을 던지는 방식이다.")
+        return 1
     if args.decel < DECEL_MIN_S:
         print(f"!! --decel 하한은 {DECEL_MIN_S} s 다 (회생 과전압).")
+        return 1
+    if args.phase_rest < MIN_REST_SEC:
+        print(f"!! --phase-rest 하한은 {MIN_REST_SEC} s 다 — 그보다 짧은 정지는 "
+              f"rest_dirty 로 빠져 영점 앵커가 안 된다.")
+        return 1
+    if args.min_drive <= SKIP_SEC + 0.05:
+        print(f"!! --min-drive 가 {args.min_drive} s 면 분석 창이 비어 있다 "
+              f"(앞 {SKIP_SEC} s + 뒤 0.05 s 를 버린다).")
+        return 1
+    if args.max_rpm > WHEEL_CIRC_REQ and not args.wheel_circ:
+        print(f"!! --max-rpm 이 {WHEEL_CIRC_REQ} 를 넘으면 --wheel-circ (바퀴 둘레 m) 가\n"
+              f"   필요하다. 저장소에 바퀴 둘레 기록이 없어서 거리 예산을 미터로 못 찍는다\n"
+              f"   — 게이트가 아니라 계산기다. 줄자로 한 번 재서 넣을 것.")
         return 1
     if not sys.stdin.isatty():
         print("!! stdin 이 터미널이 아니다 — 수동 조종이 불가능하다.")
@@ -633,28 +1202,50 @@ def main() -> int:
         print(f"!! 이미 있다: {', '.join(exist)}  — 다른 --tag 를 쓸 것.")
         return 1
 
-    slope_a = args.rpm / args.accel
-    slope_d = args.rpm / args.decel
+    slope_a = args.max_rpm / args.accel
+    slope_d = args.max_rpm / args.decel
     reach = args.watchdog * args.max_rpm / 60.0 + args.max_rpm / 60.0 * args.decel / 2
+    warn = ""
+    # breakin 은 무부하에서도 667 rpm/s (RAMP_STEP 200 / RAMP_DT 0.30) 로 돈다.
+    if slope_a > 1000:
+        warn += (f"\n  ⚠ 가속 {slope_a:.0f} rpm/s — 무부하 breakin(667)의 "
+                 f"{slope_a / 667:.1f} 배다. 접지에서는 차체 질량이 얹힌다:\n"
+                 f"    전류 첨두 → 버스 강하 → vmin 오중단 여지. --accel 을 늘릴 것.")
+    if slope_d > 1500:
+        warn += (f"\n  ⚠ 감속 {slope_d:.0f} rpm/s — 회생 여지가 크다. 다만 --decel 을 "
+                 f"늘리면 아래 정지거리도 함께 늘어난다.")
+    dist = (f"\n    = {reach / 30 * args.wheel_circ:.2f} m (바퀴 둘레 "
+            f"{args.wheel_circ:.3f} m)" if args.wheel_circ else
+            "\n    바퀴 둘레를 곱해 실제 거리를 가늠할 것.")
     print(f"""
 접지 수동 부하 시험 — ⚠ 로봇이 지면에서 실제로 움직인다.
 
 ⚠⚠ 컨트롤러에는 통신 워치독이 없다. 이 프로세스가 멈추면 모터를 세울 것은
     **물리 비상정지뿐이다.** 손 닿는 곳에 두고, 로봇을 지켜보는 사람을 따로 둘 것.
 
-  설정 {args.rpm} rpm · 상한 {args.max_rpm} rpm · 증감 {args.step}
+  설정 {args.rpm} rpm · 상한 {args.max_rpm} rpm · 증감 {args.step} · 선회 {args.turn_rpm} rpm
   가속 {args.accel:.1f} s ({slope_a:.0f} rpm/s) · 감속 {args.decel:.1f} s ({slope_d:.0f} rpm/s)
   워치독 {args.watchdog:.1f} s (경성 {args.watchdog_hard:.1f} s) · 세션 상한 {args.max_sec:.0f} s
+  구동 최소 유지 {args.min_drive:.1f} s (유효 {args.min_drive - SKIP_SEC - 0.05:.2f} s)
+  국면 전환 정지 요구 {args.phase_rest:.1f} s{warn}
 
   ⚠ 마지막 입력 뒤 최대 주행 ≈ {reach:.2f} 모터축 회전
-    = {reach / 30:.2f} 바퀴 회전 ({reach * 30:.0f} counts). 바퀴 둘레를 곱해
-    실제 거리를 가늠할 것. 그만큼 여유가 없는 곳에서는 돌리지 말 것.
+    = {reach / 30:.2f} 바퀴 회전 ({reach * 30:.0f} counts){dist}
+    그만큼 여유가 없는 곳에서는 돌리지 말 것.
 
   ⚠ tmux / nohup 아래에서 실행하지 말 것 — SSH 가 끊겨도 프로세스가 살아남아
     조종자 없이 주행한다. 그 경우 워치독이 유일한 보호다.
 
-  조작  ↑/w 전진   ↓/s 후진   space/ESC 정지   +/- 속도   k 킵얼라이브
-        m 표식     q 종료     Ctrl-C 중단
+  조작  ↑/w 전진   ↓/s 후진   ←/→ 좌/우 선회   space/ESC 정지
+        +/- 속도   k 킵얼라이브   m 표식   q 종료   Ctrl-C 중단
+  국면  t 이동     p 예열        r 시험
+        정지 상태에서만 바뀌고, 바꾼 뒤 {args.phase_rest:.0f} s 는 더 정지해 있어야 한다
+        (그 정지가 영점 앵커다). **시험 국면에서는 선회가 거부된다.**
+
+  ⚠ ←/→ 의 좌/우 라벨은 문서에서 유도한 값이고 실물 미검증이다 (화면의 `?` 표시).
+    반대로 돌면 반대 화살표를 누르면 된다 — 자료는 손상되지 않는다.
+
+  자체시험(하드웨어 불필요): python3 test/load_manual.py --self-test
 """)
     try:
         if input("  평지·주행공간·비상정지 확인했으면 Enter (그 외는 중단): ").strip():
@@ -668,11 +1259,64 @@ def main() -> int:
     drivers: dict[int, SingleMotorDriver] = {}
     bench: Bench | None = None
     st: DriveState | None = None
-    seg = Segmenter()
     zero_ref: dict | None = None
     base_pos: dict = {}
+    row: dict = {}                   # finally 에서도 참조한다 — 미할당이면 안 된다
     keys: KeyReader | None = None
     stop_flag = {"why": None}
+
+    # ── 증분 저장. 파일은 첫 행이 나갈 때 열린다 (Sink 독스트링 참조).
+    sinks = {k: Sink(outdir / f"load_{k}_{args.tag}.csv", cols)
+             for k, cols in (("pico", PICO_COLS), ("motor", MOTOR_COLS),
+                             ("marks", MARK_COLS), ("events", EVENT_COLS))}
+    wm = {"pico": 0, "motor": 0, "events": 0, "marks": 0}     # 워터마크
+    pumped = [0.0]
+    # 시동 점검이 실패해 곧바로 return 하는 경로에서는 한 줄도 쓰지 않는다 — 빈
+    # CSV 가 남으면 다음 시도가 --tag 충돌 검사에 걸려 현장에서 태그를 새로 짜야
+    # 한다. 무장은 시작 영점을 잡은 뒤에 하고, 워터마크가 그때 한꺼번에 따라잡는다.
+    armed = [False]
+
+    def add_mark(m: dict) -> None:
+        """닫힌 마크의 **유일한** 출구. `bench.marks` 가 단일 목록이고, 디스크는
+        그 워터마크를 따라간다.
+
+        `zero_anchors`/`volt_table`/`cycle_report` 는 `bench.marks` 를 시간순으로
+        전제한다. 예전처럼 `seg.marks` 에 모았다가 나중에 extend 하면 그 순서가
+        깨지고, 그 줄이 try 안이라 예외가 나면 구간 마크가 통째로 사라진다.
+        """
+        if bench is not None:
+            bench.marks.append(m)
+
+    seg = Segmenter(on_close=add_mark)
+
+    def pump(force: bool = False) -> None:
+        """워터마크 뒤의 새 행을 디스크로 내린다. **예외를 밖으로 내지 않는다** —
+        저장이 실패해도 주행 제어는 계속 돌아야 한다."""
+        if not armed[0]:
+            return
+        now = time.monotonic()
+        if not force and now - pumped[0] < PUMP_DT:
+            return
+        pumped[0] = now
+        try:
+            s = pico.samples          # list.append 는 GIL 아래 원자적이다
+            while wm["pico"] < len(s):
+                sinks["pico"].write(pico_row(pico, s[wm["pico"]]))
+                wm["pico"] += 1
+            if bench is not None:
+                while wm["motor"] < len(bench.log):
+                    sinks["motor"].write(bench.log[wm["motor"]])
+                    wm["motor"] += 1
+                while wm["marks"] < len(bench.marks):
+                    sinks["marks"].write(bench.marks[wm["marks"]])
+                    wm["marks"] += 1
+            if st is not None:
+                while wm["events"] < len(st.events):
+                    e = st.events[wm["events"]]
+                    sinks["events"].write({"t": e[0], "kind": e[1], "detail": e[2]})
+                    wm["events"] += 1
+        except BaseException:
+            pass
 
     def _sig(signum, _frame):
         # SIGHUP 기본 동작은 스택을 풀지 않고 즉시 종료라 finally 가 안 돈다 —
@@ -714,13 +1358,13 @@ def main() -> int:
                       f"d.clear_slow_start(); d.clear_slow_down()\"")
                 return 1
 
-        say("[A] 시작 영점 — 구동 전, 정지")
-        z = zero_window(pico, bench, args.zero_sec, "A:zero_start")
+        say(f"[A] 시작 영점 {args.zero_sec:.0f} s — 구동 전, 정지")
+        z = zero_window(pico, bench, args.zero_sec, "A:zero_start", pump=pump)
         if not z:
             print("!! 시작 영점을 못 잡았다 — Pico 스트림 확인.")
             return 1
         zero_ref = z
-        bench.marks.append(z["_mark"])
+        add_mark(z["_mark"])
 
         for sid in (1, 2):
             bench.enable(sid)
@@ -734,14 +1378,16 @@ def main() -> int:
             say(f"[V] 방향 확인 — {VERIFY_RPM} rpm 전진 {VERIFY_SEC} s. 앞으로 가는지 볼 것.")
             bench.poll()
             b = dict(bench.log[-1])
-            bench.set_cmd(targets_of(VERIFY_RPM))
+            bench.set_cmd(targets_of(VERIFY_RPM, "lin"))
             t0 = bench.now()
             while bench.now() - t0 < VERIFY_SEC and not bench.abort:
                 bench.poll()
-            bench.set_cmd(targets_of(0))
+                pump()
+            bench.set_cmd(targets_of(0, "lin"))
             t0 = bench.now()
             while bench.now() - t0 < 2.0 and not bench.abort:
                 bench.poll()
+                pump()
             r = bench.log[-1]
             d1 = (r.get("pos1") or 0) - (b.get("pos1") or 0)
             d2 = (r.get("pos2") or 0) - (b.get("pos2") or 0)
@@ -771,14 +1417,16 @@ def main() -> int:
                 st.last_input = bench.now()
                 say(f"    확인됨. 상한 {args.max_rpm} rpm 해제.")
 
-            say("[B] 수동 주행 — q 종료")
-            bench.poll()
+            say(f"[B] 수동 주행 — 국면 {PHASE_KO[st.sphase]} · q 종료")
+            armed[0] = True          # 여기부터 디스크에 쓴다. 워터마크가 A 창까지
+            bench.poll()             # 거슬러 올라가 한꺼번에 따라잡는다
             base_pos = dict(bench.log[-1])
+            row = base_pos
             t_start = bench.now()
-            last_cmd, last_cmd_t, last_draw, last_align = 0, 0.0, 0.0, 0.0
+            last_key, last_cmd_t, last_draw, last_align = (0, "lin"), 0.0, 0.0, 0.0
             # poll() 은 루프 뒤쪽이라 첫 반복에는 아직 row 가 없다. 실측값은
             # 폴 결과를 다음 반복으로 넘기는 변수로 들고 간다.
-            rpm_absmax, rpm_signed = 0.0, 0.0
+            rpm_absmax, v_lin, v_rot = 0.0, 0.0, 0.0
 
             while True:
                 t = bench.now()
@@ -786,49 +1434,81 @@ def main() -> int:
                 for key in kr.drain(t):
                     st.on_key(t, key)
                 if kr.eof:
-                    st.abort = "stdin EOF — 터미널이 닫혔다 (SSH 종료)"
+                    st.soft_stop(t, "stdin EOF — 터미널이 닫혔다 (SSH 종료)")
+                if st.quit:
+                    st.soft_stop(t, "조작자 q", fatal=False)
+                if st.stopping:
+                    # 소프트 정지 중에는 워치독을 재운다 — 이미 감속 중인데 1 단이
+                    # 또 걸려 이벤트를 어지럽히거나 2 단이 오발할 이유가 없다.
+                    st.last_input = t
 
-                st.update(t, rpm_absmax, rpm_signed)
+                st.update(t, rpm_absmax, v_lin, v_rot)
 
                 c = st.cmd_int(t)
-                if c != last_cmd and t - last_cmd_t >= CMD_DT:
-                    bench.set_cmd(targets_of(c))
-                    last_cmd, last_cmd_t = c, t
+                # ⚠ dedup 키에 축이 들어가야 한다. 스칼라만 보면 |c| 가 작을 때
+                #   축만 바뀐 지령이 "값이 같다" 로 걸러져 id2 가 옛 부호에 머문다.
+                ck = (c, st.axis)
+                if ck != last_key and t - last_cmd_t >= CMD_DT:
+                    bench.set_cmd(targets_of(c, st.axis))
+                    last_key, last_cmd_t = ck, t
 
                 bench.poll()
+                pump()
                 row = bench.log[-1]
                 rpm_absmax = max(abs(row.get(f"rpm{s}") or 0) for s in (1, 2))
-                rpm_signed = float(row.get("rpm1") or 0)   # id1 = 우측, + = 전진
+                v_lin, v_rot = proj(row)
 
                 ph = st.phase(t, rpm_absmax)
+                st.note_mech(t, ph)
                 if t - last_align > ALIGN_DT:
                     pico.align()
                     last_align = t
-                m = seg.feed(t, ph, st.cmd_now, zero_ref, pico)
+                m = seg.feed(t, ph, st.axis, st.sphase, st.cmd_now, zero_ref, pico, row)
                 if m:
                     bench.in_rest = (ph == "rest")
+                    # 첫 선회 구간의 실측 변위를 남긴다 — 좌/우 라벨이 유도값이라
+                    # 이 한 줄이 사후에 규약을 문서로 확정하는 근거가 된다.
+                    if (m.get("axis") == "rot" and m["kind"] == "drive_x"
+                            and not st.turn_seen and "dpos1" in m):
+                        st.turn_seen = True
+                        d1, d2 = m["dpos1"], m["dpos2"]
+                        st.log(t, "turn_check",
+                               f"{m['label']} Δpos1 {d1:+.0f} Δpos2 {d2:+.0f} → "
+                               f"직진분 {(d1 - d2) / 2:+.0f} · 회전분 {(d1 + d2) / 2:+.0f} "
+                               f"counts ({'좌' if m['cmd1'] > 0 else '우'}선회 추정)")
 
+                # ⚠ 기계 국면(ph) 을 넘긴다. 회계용 kind 를 주면 이동·예열·선회에서
+                #   접지 가드가 통째로 꺼진다.
                 why = guard.check(t, ph, row, st.cmd_now)
-                if why and not bench.abort:
-                    bench.abort = why
-                dpos = net_counts(row, base_pos)
+                if why:
+                    st.soft_stop(t, why)
+                dpos, spin = counts_of(row, base_pos)
                 if args.max_counts and abs(dpos) > args.max_counts:
-                    bench.abort = f"순변위 {dpos:+.0f} counts — 상한 {args.max_counts:.0f} 초과"
+                    st.soft_stop(t, f"직진 순변위 {dpos:+.0f} counts — "
+                                    f"상한 {args.max_counts:.0f} 초과")
+                if args.max_spin and abs(spin) > args.max_spin:
+                    st.soft_stop(t, f"회전분 {spin:+.0f} counts — "
+                                    f"상한 {args.max_spin:.0f} 초과. 접지 상실 의심")
                 if t - t_start > args.max_sec:
-                    st.quit = True
-                    st.log(t, "guard", f"세션 상한 {args.max_sec:.0f}s")
+                    st.soft_stop(t, f"세션 상한 {args.max_sec:.0f}s", fatal=False)
 
                 if t - last_draw > DRAW_DT:
-                    draw(st, row, seg, pico, zero_ref, t, dpos)
+                    draw(st, row, seg, pico, zero_ref, t, dpos, spin, args)
                     last_draw = t
 
+                # 즉시 중단 — 링크가 이미 의심스럽거나(bench.abort) 감속이 이미
+                # 실패했다(워치독 2 단)는 뜻이라 더 기다릴 근거가 없다.
                 if st.abort and not bench.abort:
                     bench.abort = st.abort
-                if bench.abort or st.quit:
+                if bench.abort:
                     break
-
-            seg.finish(bench.now(), zero_ref, pico)
-            bench.marks.extend(seg.marks)
+                # 소프트 정지 — 실측이 멎으면 빠져나간다.
+                # ⚠ 여기서 bench.abort 를 세우면 안 된다. 세우는 순간 finally 의
+                #   zero_window 가 즉시 반환해 **C:zero_end 앵커를 잃고**, 마지막
+                #   구동 구간이 뒤쪽 앵커 없이 남아 zero_at 이 상수 클램프를 한다.
+                #   사유는 종료 영점을 뜬 뒤에 finally 가 확정한다.
+                if st.stopping and (rpm_absmax < ZERO_RPM_EPS or t > st.stop_deadline):
+                    break
 
     except Bail as e:
         if bench:
@@ -852,6 +1532,19 @@ def main() -> int:
                     getattr(d, fn)()
                 except BaseException:
                     pass
+        # ①' 여기까지를 디스크에 확정한다. 값싸고, 아래 단계에서 뭐가 나든 남는다.
+        try:
+            pump(force=True)
+        except BaseException:
+            pass
+        # ①" 열려 있던 구간을 닫는다. ⚠ bench.now() 가 아니라 마지막 루프 시각을
+        #    쓴다 — ①의 modbus 6 회(≈120 ms)가 마지막 구동 구간 꼬리에 붙으면
+        #    seg_window 가 뒤를 0.05 s 밖에 안 버리므로 그대로 평균에 섞인다.
+        try:
+            if st is not None:
+                seg.finish(st.t_now, zero_ref, pico, row)
+        except BaseException:
+            pass
         # ② 종료 영점 — 무통전 상태에서. 여기서 실패해도 아래는 계속 간다.
         try:
             if bench and not stop_flag["why"]:
@@ -859,11 +1552,16 @@ def main() -> int:
                 # 여기서 Ctrl-C 가 나온다. 남은 시간을 먼저 알린다.
                 say(f"[C] 종료 영점 {min(args.zero_sec, 10.0):.0f} s — 모터는 이미 꺼졌다. "
                     f"저장은 이 다음이니 기다릴 것.")
-                z = zero_window(pico, bench, min(args.zero_sec, 10.0), "C:zero_end")
+                z = zero_window(pico, bench, min(args.zero_sec, 10.0), "C:zero_end",
+                                pump=pump, sphase=st.sphase if st else "move")
                 if z:
-                    bench.marks.append(z["_mark"])
+                    add_mark(z["_mark"])
         except BaseException:
             say("   (종료 영점 생략 — 저장은 계속한다)")
+        # ②' 소프트 정지 사유는 **종료 영점을 뜬 뒤에** 확정한다 (위 ⚠ 참조).
+        if bench is not None and st is not None and st.stopping and st.stop_fatal \
+                and not bench.abort:
+            bench.abort = st.stopping
         for d in drivers.values():
             try:
                 d.close()
@@ -874,45 +1572,41 @@ def main() -> int:
             pico.align()
         except BaseException:
             pass
+        # ⑤ 리더 스레드가 join 된 뒤라야 마지막 표본까지 잡힌다.
+        try:
+            pump(force=True)
+        except BaseException:
+            pass
+        for s in sinks.values():
+            s.close()
 
     if bench is None:
         return 1
     if bench.abort:
         print(f"\n!! 중단 사유: {bench.abort}")
 
-    # ────────────────────────────────────────────── 저장
-    outdir.mkdir(parents=True, exist_ok=True)
-    with (outdir / f"load_pico_{args.tag}.csv").open("w", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(["t", "seq", "gp26_raw", "gp27_raw", "gp28_raw", "flags"])
+    # ─────────────────────────────────────── 후처리 · 최종 저장
+    print(f"\n스트리밍 저장: pico {sinks['pico'].n} · 모터 {sinks['motor'].n} · "
+          f"구간 {sinks['marks'].n} · 이벤트 {sinks['events'].n} 행 (이미 디스크에 있다)")
+    # ⚠ finalize 는 내부에서 pico.align() 을 부른다 — pico 재작성보다 먼저 돌아야 한다.
+    recs = finalize(pico, bench, args)
+
+    def _pico_rows(f) -> None:
+        w = csv.DictWriter(f, fieldnames=PICO_COLS, extrasaction="ignore", restval="")
+        w.writeheader()
         for s in pico.samples:
-            w.writerow([f"{pico.t(s):.4f}", s[SEQ], s[C26], s[C27], s[C28], s[FL]])
-    print(f"Pico {len(pico.samples)} 샘플 → load_pico_{args.tag}.csv")
+            w.writerow(pico_row(pico, s))
 
-    if bench.log:
-        keys_m = ["t"] + [f"{k}{s}" for s in (1, 2)
-                          for k in ("cmd", "rpm", "cur", "pos", "st", "volt")] \
-                 + [f"st2_{s}" for s in (1, 2)]
-        with (outdir / f"load_motor_{args.tag}.csv").open("w", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=keys_m, extrasaction="ignore")
-            w.writeheader()
-            w.writerows(bench.log)
-        print(f"모터 {len(bench.log)} 폴 → load_motor_{args.tag}.csv")
+    if pico.samples and rewrite(outdir / f"load_pico_{args.tag}.csv", _pico_rows):
+        print(f"  pico  재작성 — 최종 align 오프셋 적용 ({len(pico.samples)} 행)")
 
-    if bench.marks:
-        cols = ["label", "kind", "t_start", "t_end", "cmd1", "cmd2", "dur", "zero_note"]
-        with (outdir / f"load_marks_{args.tag}.csv").open("w", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=cols, extrasaction="ignore", restval="")
-            w.writeheader()
-            w.writerows(bench.marks)
-        print(f"구간 {len(bench.marks)} 개 → load_marks_{args.tag}.csv")
+    def _mark_rows(f) -> None:
+        w = csv.DictWriter(f, fieldnames=MARK_COLS, extrasaction="ignore", restval="")
+        w.writeheader()
+        w.writerows(bench.marks)
 
-    if st and st.events:
-        with (outdir / f"load_events_{args.tag}.csv").open("w", newline="") as f:
-            w = csv.writer(f)
-            w.writerow(["t", "kind", "detail"])
-            w.writerows(st.events)
-        print(f"이벤트 {len(st.events)} 개 → load_events_{args.tag}.csv")
+    if bench.marks and rewrite(outdir / f"load_marks_{args.tag}.csv", _mark_rows):
+        print(f"  marks 재작성 — 구간별 amp1/amp2 추가 ({len(bench.marks)} 행)")
 
     try:
         rows = volt_table(pico, bench, (1, 2), args.dmm)
@@ -921,27 +1615,478 @@ def main() -> int:
                 w = csv.DictWriter(f, fieldnames=list(rows[0]))
                 w.writeheader()
                 w.writerows(rows)
-            print(f"정지구간 전압 {len(rows)} 개 → load_volt_{args.tag}.csv")
+            print(f"  volt  정지구간 {len(rows)} 개 → load_volt_{args.tag}.csv")
     except Exception:
         pass
 
-    # ────────────────────────────────────────────── 요약
-    drives = [m for m in bench.marks if m["kind"] == "drive"]
-    rests = [m for m in bench.marks if m["kind"] == "rest"]
-    dirty = [m for m in bench.marks if m["kind"] == "rest_dirty"]
-    print(f"\n{'=' * 70}\n주행 구간 {len(drives)} 개 · 깨끗한 정지 {len(rests)} 개 "
-          f"· 오염된 정지 {len(dirty)} 개\n{'=' * 70}")
-    if dirty:
-        print("  ⚠ 오염된 정지는 영점 기준점에서 자동 제외된다 (kind=rest_dirty).")
-        for m in dirty[:5]:
-            print(f"    {m['label']:<12} {m.get('zero_note', '')}")
-    if drives:
-        print(f"  {'구간':<14}{'지령':>7}{'길이':>7}   분석 가능")
-        for m in drives:
-            ok = "✓" if m["dur"] >= 5.0 else "— 너무 짧다 (SKIP_SEC 1.5 s 를 버리면 남는 게 없다)"
-            print(f"  {m['label']:<14}{m['cmd1']:>7}{m['dur']:>7.1f}s   {ok}")
-    print("\n⚠ 이 로그는 **접지 상태**다. breakin_* (무부하) 와 같은 표에 넣지 말 것.")
+    summarize(bench, recs, args)
     return 1 if bench.abort else 0
+
+
+# ─────────────────────────────────────────────── 재분석 (하드웨어 무관)
+def replay(argv: list[str]) -> int:
+    """저장된 `load_*` 로그만으로 amps·요약을 다시 낸다. 모터·시리얼을 안 건드린다.
+
+    두 가지 용도가 있다.
+      1. **크래시 복구** — 스트리밍본의 `t` 는 잠정값이다. 재작성 전에 죽었으면
+         `offset = min(host_t - dev_t)` 를 다시 걸어 최종값으로 만든다.
+      2. **오프라인 회귀** — 08-29 예행 로그(`manual1`)로 후처리 경로를 완주시킨다.
+
+    `breakin.py --reanalyze` 는 파일명이 `breakin_*` 로 하드코딩돼 있어 못 쓴다.
+    """
+    p = argparse.ArgumentParser(
+        prog="load_manual.py --replay",
+        description="저장된 load_* 로그 재분석 — 하드웨어 미접촉")
+    p.add_argument("--replay", action="store_true")
+    p.add_argument("--tag", required=True)
+    p.add_argument("--min-drive", type=float, default=5.0)
+    p.add_argument("--wheel-circ", type=float, default=None)
+    p.add_argument("--dmm", type=float, default=None)
+    p.add_argument("--dry-run", action="store_true",
+                   help="marks CSV 를 다시 쓰지 않는다")
+    p.add_argument("--dir", default=None, help="로그 디렉터리 (기본 test/logs)")
+    args = p.parse_args(argv)
+
+    outdir = Path(args.dir) if args.dir else REPO / "test" / "logs"
+    pf, mf, kf = (outdir / f"load_{k}_{args.tag}.csv" for k in ("pico", "motor", "marks"))
+    missing = [q.name for q in (pf, mf, kf) if not q.exists()]
+    if missing:
+        print(f"!! 로그가 없다: {', '.join(missing)}")
+        return 1
+
+    samples, host_dev = [], []
+    with pf.open() as f:
+        for r in csv.DictReader(f):
+            # 새 스키마는 host_t/dev_t 를 함께 남긴다. 있으면 오프셋을 다시 걸어
+            # 잠정 t 를 최종값으로 만든다 — 재작성 전에 죽은 로그의 복구 경로다.
+            if r.get("host_t") and r.get("dev_t"):
+                host_dev.append((float(r["host_t"]), float(r["dev_t"])))
+            samples.append(r)
+    off = min((h - d for h, d in host_dev), default=None)
+    rows = []
+    for i, r in enumerate(samples):
+        t = (host_dev[i][1] + off) if off is not None else float(r["t"])
+        rows.append((t, t, float(r["gp26_raw"]), float(r["gp27_raw"]),
+                     float(r["gp28_raw"]), int(r["flags"]), int(r["seq"])))
+    if off is not None:
+        drift = max(abs(float(s["t"]) - w[0]) for s, w in zip(samples, rows))
+        print(f"  align 재계산: offset {off:+.4f} s · 스트리밍본 대비 최대 "
+              f"{drift * 1000:.1f} ms 이동")
+
+    log = []
+    with mf.open() as f:
+        for r in csv.DictReader(f):
+            row: dict = {"t": float(r["t"])}
+            for k, v in r.items():
+                if k == "t" or v == "":
+                    continue
+                try:
+                    row[k] = float(v) if k.startswith(("cur", "volt")) else int(float(v))
+                except ValueError:
+                    pass
+            log.append(row)
+
+    marks = []
+    with kf.open() as f:
+        for r in csv.DictReader(f):
+            m = {"label": r["label"], "kind": r["kind"],
+                 "t_start": float(r["t_start"]), "t_end": float(r["t_end"]),
+                 # 옛 스키마에는 phase/axis 가 없다 — 이동 국면의 직진으로 읽는다.
+                 "phase": r.get("phase") or "move", "axis": r.get("axis") or "lin"}
+            if r.get("dur"):
+                m["dur"] = float(r["dur"])
+            for k in ("cmd1", "cmd2"):
+                if r.get(k):
+                    m[k] = int(float(r[k]))
+            if r.get("zero_note"):
+                m["zero_note"] = r["zero_note"]
+            marks.append(m)
+    # 옛 로그는 kind="drive" 가 곧 시험 구동이었다. 국면 개념이 없으므로 그대로 둔다.
+    pico = ReplayPico(rows)
+    bench = ReplayBench((1, 2), log, marks)
+    print(f"  pico {len(rows)} · 모터 {len(log)} · 구간 {len(marks)}")
+    recs = finalize(pico, bench, args)
+    if not args.dry_run:
+        def _mark_rows(f) -> None:
+            w = csv.DictWriter(f, fieldnames=MARK_COLS, extrasaction="ignore",
+                               restval="")
+            w.writeheader()
+            w.writerows(marks)
+        if rewrite(kf, _mark_rows):
+            print(f"  marks 재작성 — amp1/amp2 추가 ({len(marks)} 행)")
+    summarize(bench, recs, args)
+    return 0
+
+
+# ─────────────────────────────────────────────── 자체 시험 (하드웨어 무관)
+def _args_for_test(**kw):
+    a = argparse.Namespace(rpm=3000, turn_rpm=300, max_rpm=3000, step=100,
+                           watchdog=2.0, watchdog_hard=5.0, reverse_dwell=0.7,
+                           phase_rest=3.0, accel=2.0, decel=1.5, min_drive=5.0,
+                           wheel_circ=None)
+    for k, v in kw.items():
+        setattr(a, k, v)
+    return a
+
+
+def self_test() -> int:
+    """순수 로직 자체 시험. 하드웨어도 터미널도 필요 없다.
+
+    `DriveState`/`Ramp`/`Segmenter`/`GroundGuard` 는 시각을 전부 인자로 받으므로
+    가짜 시계로 완전히 구동된다. 회귀 잠금 셋(축 커밋 시점 · 램프 span · 가드
+    타이머)이 이 파일에서 가장 값싼 보험이다.
+    """
+    fails: list[str] = []
+
+    def ck(name: str, cond: bool, extra: str = "") -> None:
+        if not cond:
+            fails.append(f"{name}{(' — ' + extra) if extra else ''}")
+
+    # ── parse_keys ────────────────────────────────────────────────
+    for buf, want in [(b"\x1b[A", ["UP"]), (b"\x1b[B", ["DOWN"]),
+                      (b"\x1b[C", ["RIGHT"]), (b"\x1b[D", ["LEFT"]),
+                      (b"\x1bOP", ["ESC"]), (b"\x1bOQ", ["ESC"]),
+                      (b"\x1bOR", ["ESC"]), (b"\x1bOS", ["ESC"]),
+                      (b"\x1b[<0;10;20M", ["ESC"]), (b"\x1b[8;24;80t", ["ESC"]),
+                      (b"\x1b[5~", ["ESC"]), (b"\x1b[1;2A", ["UP"]),
+                      (b"wsq", ["UP", "DOWN", "QUIT"]),
+                      (b"tpr", ["PH_MOVE", "PH_WARM", "PH_MEAS"]),
+                      (b"\x03", ["ABORT"])]:
+        got, rest = parse_keys(buf)
+        ck(f"parse_keys({buf!r})", got == want and rest == b"", f"got {got},{rest!r}")
+    ck("parse_keys 보류", parse_keys(b"\x1b") == ([], b"\x1b"))
+    ck("parse_keys 보류2", parse_keys(b"\x1b[") == ([], b"\x1b["))
+    a1, r1 = parse_keys(b"\x1b")
+    a2, r2 = parse_keys(r1 + b"[")
+    a3, r3 = parse_keys(r2 + b"C")
+    ck("parse_keys 분할도착", a1 + a2 + a3 == ["RIGHT"] and r3 == b"")
+    ck("parse_keys ESC_MAX", parse_keys(b"\x1b[" + b"1;" * 40)[0] == ["ESC"])
+
+    # ── 부호표 · 투영 ─────────────────────────────────────────────
+    ck("targets_of lin", targets_of(300, "lin") == {1: 300, 2: -300})
+    ck("targets_of rot", targets_of(300, "rot") == {1: 300, 2: 300})
+    ck("targets_of 0 은 축 무관",
+       targets_of(0, "lin") == targets_of(0, "rot") == {1: 0, 2: 0})
+    ck("proj lin", proj({"rpm1": 300, "rpm2": -300}) == (300.0, 0.0))
+    ck("proj rot", proj({"rpm1": 300, "rpm2": 300}) == (0.0, 300.0))
+    ck("counts_of", counts_of({"pos1": 900, "pos2": -900},
+                              {"pos1": 0, "pos2": 0}) == (900.0, 0.0))
+    ck("mark_kind 시험직진", mark_kind("drive", "lin", "meas") == "drive")
+    for ph, ax, sp in (("drive", "rot", "meas"), ("drive", "lin", "warm"),
+                       ("drive", "lin", "move"), ("drive", "rot", "move")):
+        ck(f"mark_kind {ax}/{sp}", mark_kind(ph, ax, sp) == "drive_x")
+    ck("mark_kind rest", mark_kind("rest", "lin", "meas") == "rest")
+
+    # ── Ramp ─────────────────────────────────────────────────────
+    rp = Ramp(2.0, 1.5)
+    rp.retarget(0.0, 3000, 3000)
+    ck("Ramp 연속성", abs(rp.value(0.0)) < 1e-9)
+    ck("Ramp 도달", rp.done(2.0) and abs(rp.value(2.0) - 3000) < 1e-6)
+    rp.retarget(2.0, 0.0, 3000)          # ★ span 은 3000 (떠나는 축) 이어야 한다
+    ck("Ramp 감속 R2", abs(rp.value(3.5)) < 1e-6,
+       f"3000→0 이 decel 1.5 s 안에 안 끝난다: {rp.value(3.5):.0f}")
+    rp.retarget(2.0, 0.0, 300)           # 선회 span 으로 잘못 잡으면
+    ck("Ramp span 회귀 근거", rp.value(3.5) > 2500,
+       "선회 span 으로는 감속이 안 끝난다는 전제가 깨졌다")
+
+    # ── DriveState ① 축 커밋 시점 (R1 회귀 잠금) ────────────────────
+    st = DriveState(_args_for_test())
+    st.on_key(0.0, "UP")
+    st.update(0.0, 0.0, 0.0, 0.0)
+    t = 0.0
+    while t < 2.5:                        # 3000 rpm 순항까지 올린다
+        t += 0.1
+        st.on_key(t, "KEEP")
+        st.update(t, abs(st.cmd_now), st.cmd_now, 0.0)
+    ck("① 순항 도달", abs(st.cmd_now - 3000) < 1, f"{st.cmd_now:.0f}")
+    st.on_key(t, "LEFT")
+    ck("① pending 이 선다", st.pending == ("rot", +1), f"{st.pending}")
+    ck("① 축은 아직 lin 이다", st.axis == "lin", f"{st.axis}")
+    sign_ok = True
+    while t < 6.0 and st.axis == "lin":
+        t += 0.05
+        st.on_key(t, "KEEP")
+        st.update(t, abs(st.cmd_now), st.cmd_now, 0.0)
+        if targets_of(st.cmd_int(t), st.axis)[2] > 0:
+            sign_ok = False
+    ck("① 감속 내내 id2 부호 불변", sign_ok,
+       "축이 일찍 커밋돼 id2 지령이 뒤집혔다")
+
+    # ── DriveState ② 실측이 멎어야 커밋된다 ─────────────────────────
+    st2 = DriveState(_args_for_test())
+    st2.on_key(0.0, "UP")
+    t = 0.0
+    while t < 2.5:
+        t += 0.1
+        st2.on_key(t, "KEEP")
+        st2.update(t, abs(st2.cmd_now), st2.cmd_now, 0.0)
+    st2.on_key(t, "LEFT")
+    while t < 4.5:                        # 지령은 0 이 되지만 실측은 계속 굴러간다
+        t += 0.1
+        st2.on_key(t, "KEEP")
+        st2.update(t, 500.0, 500.0, 0.0)
+    ck("② 실측이 돌면 커밋 안 된다", st2.axis == "lin", f"{st2.axis} at {t:.1f}")
+    while t < 6.5 and st2.axis == "lin":
+        t += 0.1
+        st2.on_key(t, "KEEP")
+        st2.update(t, 0.0, 0.0, 0.0)
+    ck("② 멎으면 커밋된다", st2.axis == "rot" and st2.dir == +1,
+       f"{st2.axis}/{st2.dir}")
+    ck("② 선회 지령은 turn_rpm", abs(st2.ramp.target - 300) < 1e-6,
+       f"{st2.ramp.target}")
+
+    # ── DriveState ①' 램프 span 은 떠나는 축 기준인가 (R2 회귀 잠금) ──
+    # span 을 새 축(선회 300)으로 잡으면 3000 rpm 감속이 15 s 로 늘어나고, 안전망
+    # bail(3.7 s)이 먼저 이겨 **2000 rpm 으로 굴러가는 중에** 축이 커밋된다.
+    # 그때 로그는 "감속 타임아웃" 이 된다 — 그것이 보호가 깨졌다는 신호다.
+    stb = DriveState(_args_for_test())
+    stb.on_key(0.0, "UP")
+    t = 0.0
+    while t < 2.5:
+        t += 0.1
+        stb.on_key(t, "KEEP")
+        stb.update(t, abs(stb.cmd_now), stb.cmd_now, 0.0)
+    stb.on_key(t, "LEFT")
+    t_press = t
+    while t < t_press + 5.0 and stb.axis == "lin":
+        t += 0.05
+        stb.on_key(t, "KEEP")
+        stb.update(t, abs(stb.cmd_now), stb.cmd_now, 0.0)   # 이상적 추종
+    ev = [e for e in stb.events if "개시" in e[2]]
+    ck("①' 감속이 지령대로 끝난다 (R2)",
+       bool(ev) and "실측 정지 확인" in ev[-1][2],
+       f"{ev[-1][2] if ev else '커밋 없음'}")
+    ck("①' 커밋이 감속 시간 안에 일어난다",
+       bool(ev) and ev[-1][0] - t_press < stb.ramp.decel_s + stb.dwell + 0.3,
+       f"{(ev[-1][0] - t_press) if ev else -1:.2f} s")
+
+    # ── DriveState ②' 자동반복이 전환을 막지 않는가 ────────────────
+    st2b = DriveState(_args_for_test())
+    st2b.on_key(0.0, "UP")
+    t = 0.0
+    while t < 2.5:
+        t += 0.1
+        st2b.on_key(t, "KEEP")
+        st2b.update(t, abs(st2b.cmd_now), st2b.cmd_now, 0.0)
+    rpm = 3000.0
+    while t < 9.0 and st2b.axis == "lin":
+        t += 0.05
+        st2b.on_key(t, "LEFT")            # ★ 누르고 있는 상태 — 매 폴 재입력
+        rpm = max(0.0, rpm - 150.0)       # 실측이 실제로 멎어 간다
+        st2b.update(t, rpm, rpm, 0.0)
+    ck("②' 키를 누르고 있어도 전환이 완료된다", st2b.axis == "rot",
+       f"{st2b.axis} — 자동반복이 rev_zero_at 을 되돌리고 있다")
+    ck("②' 대기 이벤트가 넘치지 않는다",
+       sum(1 for e in st2b.events if "전환 대기" in e[2]) == 1,
+       f"{sum(1 for e in st2b.events if '전환 대기' in e[2])} 건")
+
+    # ── DriveState ③ 축 전환 판정에 투영을 쓰면 안 된다 (R1 근거) ────
+    st3 = DriveState(_args_for_test())
+    st3.axis, st3.dir, st3.cmd_now = "lin", +1, 3000.0
+    st3.rpm_lin, st3.rpm_rot, st3.rpm_absmax = 3000.0, 0.0, 3000.0
+    ck("③ 직진 중 선회는 전환 대기", st3._moving_against("rot", +1) is True)
+    ck("③ 같은 축 같은 부호는 통과", st3._moving_against("lin", +1) is False)
+    ck("③ 같은 축 역부호는 대기", st3._moving_against("lin", -1) is True)
+
+    # ── DriveState ④ 워치독 ─────────────────────────────────────────
+    st4 = DriveState(_args_for_test())
+    st4.on_key(0.0, "UP")
+    st4.update(2.5, 3000.0, 3000.0, 0.0)
+    ck("④ 워치독 1 단", st4.wd_fired and st4.dir == 0)
+    st4.update(5.5, 3000.0, 3000.0, 0.0)
+    ck("④ 워치독 2 단", bool(st4.abort), f"{st4.abort}")
+
+    # ── DriveState ⑤ +/- 와 선회 독립 ──────────────────────────────
+    st5 = DriveState(_args_for_test(rpm=500, max_rpm=1000, step=100))
+    for _ in range(10):
+        st5.on_key(0.0, "PLUS")
+    ck("⑤ + 상한", st5.setpoint == 1000, f"{st5.setpoint}")
+    for _ in range(20):
+        st5.on_key(0.0, "MINUS")
+    ck("⑤ - 하한", st5.setpoint == 100, f"{st5.setpoint}")
+    st5.locked = True
+    for _ in range(10):
+        st5.on_key(0.0, "PLUS")
+    ck("⑤ locked 상한", st5.setpoint == VERIFY_RPM, f"{st5.setpoint}")
+    st6 = DriveState(_args_for_test())
+    st6.on_key(0.0, "LEFT")
+    ck("⑥ 선회는 turn_rpm", abs(st6.ramp.target - 300) < 1e-6, f"{st6.ramp.target}")
+    st6.on_key(0.1, "PLUS")
+    ck("⑥ + 가 선회를 안 바꾼다", abs(st6.ramp.target - 300) < 1e-6,
+       f"{st6.ramp.target}")
+
+    # ── 국면 상태기계 ───────────────────────────────────────────────
+    st7 = DriveState(_args_for_test())
+    ck("국면 시작값", st7.sphase == "move")
+    st7.on_key(0.0, "UP")
+    st7.update(0.1, 100.0, 100.0, 0.0)
+    st7.note_mech(0.1, st7.phase(0.1, 100.0))
+    ck("국면 전환 거부(구동 중)", st7.try_phase(0.1, "meas") is False)
+    st7.on_key(0.2, "STOP")
+    t = 0.2
+    while t < 3.0:
+        t += 0.1
+        st7.update(t, 0.0, 0.0, 0.0)
+        st7.note_mech(t, st7.phase(t, 0.0))
+    ck("국면 전환 거부(앵커 부족)", st7.try_phase(2.0, "meas") is False)
+    while t < 8.0:
+        t += 0.1
+        st7.update(t, 0.0, 0.0, 0.0)
+        st7.note_mech(t, st7.phase(t, 0.0))
+    ck("국면 전환 수용", st7.try_phase(t, "meas") is True)
+    ck("전환 뒤 무장 대기", st7.arm_at > t)
+    st7.on_key(t + 0.1, "UP")
+    ck("무장 전 구동 거부", st7.dir == 0)
+    ck("무장 전 거부 이벤트", any("영점 앵커" in e[2] for e in st7.events))
+    # ⚠ 무장이 풀린 **뒤에** 눌러야 국면 거부를 시험하는 것이 된다. 무장 중에는
+    #   어차피 막히므로 그때 눌러 보면 이 시험이 통과해도 아무것도 증명하지 못한다.
+    st7.on_key(st7.arm_at + 0.1, "LEFT")
+    ck("시험 국면 선회 거부", st7.axis == "lin" and st7.dir == 0,
+       f"{st7.axis}/{st7.dir}")
+    ck("시험 국면 선회 거부 이벤트",
+       any("선회 금지" in e[2] for e in st7.events))
+    for i in range(30):                   # 키를 누르고 있는 동안 (약 30 Hz)
+        st7.on_key(st7.arm_at + 0.11 + i * 0.03, "LEFT")
+    ck("거부 이벤트 율제한",
+       sum(1 for e in st7.events if "선회 금지" in e[2]) == 1,
+       f"{sum(1 for e in st7.events if '선회 금지' in e[2])} 건 — 자동반복이 로그를 채운다")
+    st7.on_key(st7.arm_at + 1.5, "UP")
+    ck("무장 뒤 구동 수용", st7.dir == +1 and st7.axis == "lin")
+
+    # ── 소프트 정지 중에는 조작을 안 받는다 ─────────────────────────
+    st9 = DriveState(_args_for_test())
+    st9.on_key(0.0, "UP")
+    t = 0.0
+    while t < 2.5:
+        t += 0.1
+        st9.on_key(t, "KEEP")
+        st9.update(t, abs(st9.cmd_now), st9.cmd_now, 0.0)
+    st9.soft_stop(t, "직진 순변위 상한 초과")
+    cmd_at_stop = st9.cmd_now
+    while t < 6.0:
+        t += 0.05
+        st9.on_key(t, "UP")               # ★ 손이 화살표를 누르고 있다
+        st9.update(t, abs(st9.cmd_now), st9.cmd_now, 0.0)
+    ck("소프트 정지 중 재가속 금지", st9.cmd_now < cmd_at_stop and st9.dir == 0,
+       f"지령 {st9.cmd_now:.0f} (정지 개시 시 {cmd_at_stop:.0f})")
+    ck("소프트 정지는 0 까지 간다", abs(st9.cmd_now) < 1, f"{st9.cmd_now:.0f}")
+
+    # ── STOP 은 대기 중인 전환을 취소한다 ───────────────────────────
+    st8 = DriveState(_args_for_test())
+    st8.on_key(0.0, "UP")
+    t = 0.0
+    while t < 2.5:
+        t += 0.1
+        st8.on_key(t, "KEEP")
+        st8.update(t, abs(st8.cmd_now), st8.cmd_now, 0.0)
+    st8.on_key(t, "LEFT")
+    ck("STOP 전 pending", st8.pending == ("rot", +1))
+    st8.on_key(t + 0.05, "STOP")
+    ck("STOP 이 pending 을 지운다", st8.pending is None, f"{st8.pending}")
+    while t < 12.0:                       # 멎은 뒤에도 선회가 살아나면 안 된다
+        t += 0.1
+        st8.on_key(t, "KEEP")
+        st8.update(t, max(0.0, st8.cmd_now), st8.cmd_now, 0.0)
+    ck("STOP 뒤 선회가 살아나지 않는다",
+       st8.axis == "lin" and st8.dir == 0 and abs(st8.cmd_now) < 1,
+       f"{st8.axis}/{st8.dir}/{st8.cmd_now:.0f}")
+
+    # ── Segmenter ──────────────────────────────────────────────────
+    class _P:
+        samples: list = []
+
+        def t(self, s):
+            return s[H]
+    got: list[dict] = []
+    sg = Segmenter(on_close=got.append)
+    pos = {"pos1": 0, "pos2": 0}
+    sg.feed(0.0, "rest", "lin", "move", 0.0, None, _P(), pos)
+    sg.feed(3.0, "ramp", "lin", "move", 100.0, None, _P(), pos)
+    sg.feed(4.0, "drive", "lin", "meas", 500.0, None, _P(), pos)
+    sg.feed(10.0, "drive", "rot", "move", 300.0, None, _P(),
+            {"pos1": 100, "pos2": 100})
+    sg.finish(12.0, None, _P(), {"pos1": 200, "pos2": 200})
+    ck("Segmenter 개수", len(got) == 4, f"{len(got)}")
+    ck("Segmenter rest", got[0]["kind"] == "rest" and got[0]["label"].startswith("S"))
+    ck("Segmenter ramp", got[1]["kind"] == "ramp" and got[1]["label"].startswith("R"))
+    ck("Segmenter 시험직진 = drive",
+       got[2]["kind"] == "drive" and got[2]["label"].startswith("D"))
+    ck("Segmenter 선회 = drive_x",
+       got[3]["kind"] == "drive_x" and got[3]["label"].startswith("X"))
+    ck("Segmenter 선회 cmd2 부호", got[3]["cmd1"] == 300 and got[3]["cmd2"] == 300,
+       f"{got[3]['cmd1']}/{got[3]['cmd2']}")
+    ck("Segmenter 직진 cmd2 부호", got[2]["cmd1"] == 500 and got[2]["cmd2"] == -500)
+    ck("Segmenter dpos", got[3].get("dpos1") == 100.0 and got[3].get("dpos2") == 100.0,
+       f"{got[3].get('dpos1')}/{got[3].get('dpos2')}")
+    ck("Segmenter phase 컬럼", got[2]["phase"] == "meas" and got[3]["phase"] == "move")
+    # 국면만 바뀌어도 구간이 쪼개져야 한다 (영점 앵커가 거기서 생긴다)
+    got2: list[dict] = []
+    sg2 = Segmenter(on_close=got2.append)
+    sg2.feed(0.0, "rest", "lin", "move", 0.0, None, _P(), pos)
+    sg2.feed(5.0, "rest", "lin", "meas", 0.0, None, _P(), pos)
+    sg2.finish(9.0, None, _P(), pos)
+    ck("국면 전환이 rest 를 쪼갠다", len(got2) == 2 and got2[0]["dur"] == 5.0,
+       f"{[m['dur'] for m in got2]}")
+    ck("쪼갠 앞조각이 앵커로 산다", got2[0]["kind"] == "rest")
+    got3: list[dict] = []
+    sg3 = Segmenter(on_close=got3.append)
+    sg3.feed(0.0, "rest", "lin", "move", 0.0, None, _P(), pos)
+    sg3.finish(1.0, None, _P(), pos)
+    ck("짧은 정지는 rest_dirty", got3[0]["kind"] == "rest_dirty"
+       and got3[0]["zero_note"] == "too_short")
+
+    # ── GroundGuard 타이머가 id 별인가 ──────────────────────────────
+    # ⚠ id1 만 폭주하고 id2 는 정상인 상황. 타이머가 공유였다면 id2 의 else 가지가
+    #   매 폴 타이머를 지워 1 s 를 영영 못 채운다 — 선회 중 한쪽 바퀴가 접지를 잃는
+    #   경우가 정확히 이 모양이다. 그래서 "id2 가 먼저 평가되는" 순서까지 재현한다.
+    g = GroundGuard(4.0, 0.0, 250)
+    row = {"cmd1": 1000, "rpm1": 2000, "cmd2": -1000, "rpm2": -1000}
+    why = None
+    for i in range(40):
+        why = g.check(i * 0.1, "drive", row, 1000.0)
+        if why:
+            break
+    ck("GroundGuard id 별 오버스피드 타이머", why is not None and "id=1" in why,
+       f"{why}")
+    ck("GroundGuard 타이머가 정말 id 별인가",
+       g.over_since[1] is not None and g.over_since[2] is None,
+       f"{g.over_since}")
+    # 스톨 쪽도 같은 성질을 갖는지 (id2 만 스톨)
+    g3 = GroundGuard(1.0, 0.0, 250)
+    srow = {"cmd1": 1000, "rpm1": 1000, "cmd2": -1000, "rpm2": 0}
+    swhy = None
+    for i in range(40):
+        swhy = g3.check(i * 0.1, "drive", srow, 1000.0)
+        if swhy:
+            break
+    ck("GroundGuard id 별 스톨 타이머", swhy is not None and "id=2" in swhy, f"{swhy}")
+    g2 = GroundGuard(4.0, 0.0, 250)
+    ck("GroundGuard 는 기계 국면만 본다",
+       g2.check(0.0, "ramp", row, 1000.0) is None)
+
+    # ── Sink / rewrite ─────────────────────────────────────────────
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "load_marks_x.csv"
+        sk = Sink(p, MARK_COLS)
+        ck("Sink 지연 개방", not p.exists())
+        sk.write({"label": "S001", "kind": "rest", "t_start": 0.0})
+        ck("Sink 즉시 flush", p.exists() and "S001" in p.read_text())
+        sk.close()
+        ok = rewrite(p, lambda f: f.write("label,kind\nS001,rest\n"))
+        ck("rewrite 성공", ok and p.read_text().endswith("S001,rest\n"))
+        ck("rewrite tmp 정리", not p.with_suffix(".csv.tmp").exists())
+        before = p.read_text()
+
+        def _boom(f):
+            f.write("x")
+            raise RuntimeError("의도된 실패")
+        ck("rewrite 실패는 원본 보존",
+           rewrite(p, _boom) is False and p.read_text() == before)
+
+    print(f"\n자체시험 {'실패 ' + str(len(fails)) + ' 건' if fails else '전체 통과'}")
+    for f in fails:
+        print(f"  ✗ {f}")
+    return 1 if fails else 0
 
 
 if __name__ == "__main__":
