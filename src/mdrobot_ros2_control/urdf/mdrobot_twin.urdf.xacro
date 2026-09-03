@@ -25,7 +25,10 @@
   <!-- Per-wheel direction. A skid-steer mounts the two motors mirrored, so one
        side usually needs reverse=true for +cmd_vel.x to drive the base forward.
        Default false on both (no unverified assumption baked in): drive the base,
-       observe, then set reverse=true on whichever side spins the wrong way. -->
+       observe, then set reverse=true on whichever side spins the wrong way.
+       THIS rig's measured values live in config/twin_controllers.yaml (reverse_L
+       true, from the 2026-08-14 direction check) — the defaults here stay neutral
+       so the package is usable on another robot. Same for counts_per_rev below. -->
   <xacro:arg name="reverse_L" default="false"/>
   <xacro:arg name="reverse_R" default="false"/>
   <!-- USE_LIMIT_SW: -1 leave as-is, 0 disable (often needed for serial drive), 1 enable. -->

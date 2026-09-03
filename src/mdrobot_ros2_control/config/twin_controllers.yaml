@@ -11,7 +11,8 @@
 #   controller_manager / diff_cont - the controllers themselves.
 #
 # diff_cont drives motor_L (left) / motor_R (right) from /diff_cont/cmd_vel.
-# wheel_separation / wheel_radius are placeholders — set them for your robot.
+# The geometry below is measured on THIS rig — see the notes at diff_cont.
+# On a different robot, re-derive both from your own wheel and track.
 mdrobot_hardware:
   ros__parameters:
     # ⚠ by-id 를 쓴다. /dev/ttyUSB0 은 재삽입·부팅 순서에 따라 번호가 바뀌고,
@@ -66,8 +67,27 @@ diff_cont:
   ros__parameters:
     left_wheel_names: ["motor_L"]
     right_wheel_names: ["motor_R"]
+    # ⚠ wheel_radius is an EFFECTIVE radius with the gearbox folded in, not the
+    #   tyre radius. counts_per_rev above is 30 = counts per MOTOR-shaft rev, so
+    #   the joint interfaces report motor-shaft rad / rad/s. diff_drive_controller
+    #   multiplies by wheel_radius, so that value must be tyre_radius / gear_ratio.
+    #
+    #     tyre 10 inch -> 0.254 m dia -> 0.127 m radius   (2026-09-03, measured)
+    #     K10H30BU gearbox 30:1
+    #     0.127 / 30 = 0.004233 m
+    #
+    #   The old value 0.00307 implied a 92 mm wheel (7.25 inch) and was 1.38x off:
+    #   commanded speed ran ~38% fast and odometry read ~28% slow. Nobody caught it
+    #   because the twin path has never been driven on hardware (README: experimental).
+    #   Cross-check: 900 counts per wheel revolution (30 counts/motor-rev x 30:1)
+    #   and a 0.798 m circumference reproduce the distances in
+    #   docs/ground_load_20260903.csv.
+    wheel_radius: 0.004233
+
+    # ⚠ NOT measured. 0.4 m has been carried since the twin mode was written and
+    #   no session has ever put a tape across the contact patches. Odometry yaw
+    #   scales directly with it — measure before trusting any heading.
     wheel_separation: 0.4
-    wheel_radius: 0.00307
     # State feedback is in SI when counts_per_rev is set in the URDF.
     open_loop: false
     base_frame_id: base_link

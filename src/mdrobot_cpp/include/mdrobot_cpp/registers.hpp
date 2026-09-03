@@ -44,7 +44,10 @@ constexpr uint16_t PID_TAR_POSI_VEL  = 176;
 constexpr uint16_t PID_COM_TAR_SPEED = 180;
 
 // --- acceleration / deceleration: slow-start / slow-down ---
-// NOT yet hardware-verified.
+// Speed slow (153/154 single, 108/109/111/112 dual) hardware-verified 2026-06-22
+// (Phase 12). Position slow (178/179, 113-116) is still protocol-doc-based.
+// Mirrors registers.py — keep the two verification states in step; do not collapse
+// them into one blanket note (CLAUDE.md).
 constexpr uint16_t PID_MAX_SS_TIME   = 57;
 constexpr uint16_t PID_MIN_SSSD      = 124;
 constexpr uint16_t PID_SLOW_START    = 153;
