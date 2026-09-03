@@ -75,6 +75,15 @@ SerialTransport::SerialTransport(const std::string& port, int baudrate,
     throw std::runtime_error("tcsetattr failed: " + std::string(std::strerror(errno)));
   }
 
+  // Modbus RTU inter-frame silence: 3.5 character times (11 bits each); the
+  // spec fixes it at 1.75 ms above 19200 baud. Without it the slave never sees
+  // the frame boundary and silently drops the request. This stays hidden on
+  // adapters whose USB latency timer supplies the gap by accident (FTDI
+  // defaults to 16 ms), so it only surfaces once that timer is lowered.
+  const double gap = (baudrate > 19200) ? 0.00175 : 38.5 / baudrate;
+  interframe_ = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+      std::chrono::duration<double>(gap));
+
   // Settle + flush (same as Python: USB-serial boot noise mitigation).
   if (settle > 0) {
     std::this_thread::sleep_for(
@@ -87,8 +96,18 @@ SerialTransport::~SerialTransport() {
   close();
 }
 
+void SerialTransport::wait_interframe() {
+  if (last_activity_.time_since_epoch().count() == 0) return;  // first frame
+  const auto ready = last_activity_ + interframe_;
+  const auto now = std::chrono::steady_clock::now();
+  if (now < ready) std::this_thread::sleep_for(ready - now);
+}
+
 std::size_t SerialTransport::write(const uint8_t* data, std::size_t len) {
   if (fd_ < 0) throw std::runtime_error("Port not open");
+  // This call starts a new frame: the slave only recognises it after enough
+  // silence on the bus, so wait out the inter-frame gap first.
+  wait_interframe();
   // POSIX write() may transfer fewer bytes than requested — loop until the
   // whole frame is out (or write_timeout elapses), so frames are never split.
   const auto deadline =
@@ -115,6 +134,7 @@ std::size_t SerialTransport::write(const uint8_t* data, std::size_t len) {
     }
   }
   ::tcdrain(fd_);  // wait for transmission to complete (like pyserial flush)
+  last_activity_ = std::chrono::steady_clock::now();
   return total;
 }
 
@@ -127,6 +147,7 @@ std::vector<uint8_t> SerialTransport::read(std::size_t size) {
     throw std::runtime_error("read failed: " + std::string(std::strerror(errno)));
   }
   buf.resize(static_cast<std::size_t>(n));
+  last_activity_ = std::chrono::steady_clock::now();
   return buf;
 }
 

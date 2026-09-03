@@ -10,9 +10,23 @@ import fine without pyserial installed.
 
 from __future__ import annotations
 
+import time
 from typing import Any, Protocol, runtime_checkable
 
 from .constants import DEFAULT_BAUDRATE, DEFAULT_TIMEOUT
+
+
+def interframe_delay(baudrate: int | None) -> float:
+    """Modbus RTU inter-frame silence: 3.5 character times (11 bits each).
+
+    The spec fixes the gap at 1.75 ms above 19200 baud. Without it the slave
+    never sees the frame boundary and silently drops the request. This stays
+    hidden on adapters whose USB latency timer supplies the gap by accident
+    (FTDI defaults to 16 ms), so it only surfaces once that timer is lowered.
+    """
+    if not baudrate or baudrate > 19200:
+        return 0.00175
+    return 38.5 / baudrate
 
 
 @runtime_checkable
@@ -49,12 +63,12 @@ class SerialTransport:
         settle: float = 0.2,
         write_timeout: float = 1.0,
     ) -> None:
-        import time
-
         import serial  # lazy import: pyserial is an optional dependency
 
         self.port = port
         self.baudrate = baudrate
+        self._interframe = interframe_delay(baudrate)
+        self._last_activity = 0.0
         # write_timeout: keep write/flush from blocking forever if the port wedges
         # (prevents shutdown hangs).
         self._serial = serial.Serial(
@@ -85,18 +99,36 @@ class SerialTransport:
         obj = cls.__new__(cls)
         obj.port = getattr(serial_port, "port", None)
         obj.baudrate = getattr(serial_port, "baudrate", None)
+        obj._interframe = interframe_delay(obj.baudrate)
+        obj._last_activity = 0.0
         obj._serial = serial_port
         return obj
 
+    def _wait_interframe(self) -> None:
+        """Hold off until the bus has been silent for 3.5 character times."""
+        if not self._last_activity:
+            return
+        remaining = self._interframe - (time.monotonic() - self._last_activity)
+        if remaining > 0:
+            time.sleep(remaining)
+
     def write(self, data: bytes) -> int:
-        """Send data, wait for transmission to complete, and return bytes written."""
+        """Send data, wait for transmission to complete, and return bytes written.
+
+        Waits out the Modbus inter-frame gap first: this call starts a new frame,
+        and the slave only recognises it after enough silence on the bus.
+        """
+        self._wait_interframe()
         written = self._serial.write(data)
         self._serial.flush()
+        self._last_activity = time.monotonic()
         return written if written is not None else len(data)
 
     def read(self, size: int) -> bytes:
         """Read up to size bytes; returns fewer (or empty) on timeout."""
-        return self._serial.read(size)
+        data = self._serial.read(size)
+        self._last_activity = time.monotonic()
+        return data
 
     def flush_input(self) -> None:
         """Discard any bytes left in the receive buffer (call before a request)."""

@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -51,10 +52,15 @@ class SerialTransport : public Transport {
   int baudrate() const { return baudrate_; }
 
  private:
+  /// Hold off until the bus has been silent for 3.5 character times.
+  void wait_interframe();
+
   std::string port_;
   int baudrate_;
   double write_timeout_;
   int fd_ = -1;
+  std::chrono::steady_clock::duration interframe_{};
+  std::chrono::steady_clock::time_point last_activity_{};
 };
 
 }  // namespace mdrobot
