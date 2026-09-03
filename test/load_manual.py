@@ -28,7 +28,7 @@
 조작
   ↑ / w   전진        ↓ / s   후진        space / ESC   정지
   ← / →   좌 / 우 제자리 선회 (`--turn-rpm` 고정. +/- 로 안 바뀐다)
-  + / =   설정 rpm 증가            - / _   감소
+  PgUp    설정 rpm 증가            PgDn    감소   (+ / - 도 그대로 듣는다)
   k       킵얼라이브 (아무것도 안 바꾸고 워치독만 연장)
   m       표식 — 노면이 바뀐 지점 등을 이벤트 로그에 남긴다
   t / r      국면 — 이동 / 시험
@@ -144,9 +144,6 @@ DRAW_DT = 0.20           # 화면 갱신 5 Hz — stdout 이 느린 SSH 에서 �
 ALIGN_DT = 30.0          # pico.align() 은 전 샘플을 훑는다. hot path 에 두지 않는다
 PUMP_DT = 0.25           # 증분 저장 주기 s — 디스크 I/O 를 제어 루프에서 떼어 놓는다
 
-VERIFY_RPM = 200         # 시작 방향 확인 속도 (감속기 출력 6.7 rpm — 손으로 잡힌다)
-VERIFY_SEC = 1.5
-
 # ⚠ 예전 규약("A B C D [ ~ 숫자를 조작 키로 쓰지 않는다")은 **불완전했다.** 터미널이
 #   보내는 escape 는 그것 말고도 많다 — F1~F4 는 SS3 (`ESC O P/Q/R/S`), SGR 마우스는
 #   `ESC [ <0;10;20 M`, 창크기 보고는 `ESC [ 8;24;80 t` 다. 옛 파서는 이것들을 조립하지
@@ -163,6 +160,11 @@ KEYMAP = {
 # 화살표 4 종. ←/→ 는 제자리 선회다 (직진 키 w/s 처럼 a/d 를 쓸 수는 없다 —
 # 소문자라도 미완성 escape 잔재와 섞이면 화살표 꼬리와 구별이 안 된다).
 ARROW = {b"A": "UP", b"B": "DOWN", b"C": "RIGHT", b"D": "LEFT"}
+# CSI 중 final 만으로는 안 갈리는 것들 — (앞 파라미터, final) 로 본다.
+# PgUp/PgDn 은 `ESC [ 5 ~` / `ESC [ 6 ~` 이고 final 이 둘 다 `~` 다. Home(1~)·
+# Insert(2~)·Delete(3~)·End(4~) 도 같은 final 을 쓰므로 5·6 만 집는다 — 나머지는
+# 여느 미지의 escape 처럼 ESC(정지)로 퇴화한다.
+CSI_SEQ = {(b"5", b"~"): "PLUS", (b"6", b"~"): "MINUS"}
 # 워치독을 연장하는 토큰 — '조작자가 지켜보고 있다'의 증거가 되는 것만.
 # 미인식 바이트는 갱신하지 않는다 (붙여넣기 잔재, 고양이가 밟은 키 등).
 # ⚠ 선회·국면 키가 빠지면 선회 중 2 s 마다 워치독이 오발한다.
@@ -227,7 +229,13 @@ def parse_keys(buf: bytes) -> tuple[list[str], bytes]:
                     i = n
                     continue
                 return out, buf[i:]
-            out.append(ARROW.get(buf[j:j + 1], "ESC"))   # 미지의 final → 정지로 퇴화
+            final = buf[j:j + 1]
+            # 수식자가 붙으면 `ESC [ 1;2 A` 처럼 파라미터가 늘어난다. 화살표는 final
+            # 만으로 갈리고, PgUp/PgDn 은 앞 숫자까지 봐야 한다.
+            head = bytes(buf[i + 2:j]).split(b";")[0]
+            out.append(ARROW.get(final)                  # 화살표 — 수식자 무시
+                       or CSI_SEQ.get((head, final))     # PgUp / PgDn
+                       or "ESC")                         # 미지의 final → 정지로 퇴화
             i = j + 1
             continue
         if c == b"O":                        # SS3 — F1~F4. 3 바이트를 통째로 버린다
@@ -389,7 +397,6 @@ class DriveState:
         self.events: list[tuple] = []
         self.cmd_now = 0.0
         self.t_now = 0.0
-        self.locked = False              # 방향 확인 전에는 setpoint 를 못 올린다
         self.sphase = "move"             # 국면 — move / meas
         self.arm_at = 0.0                # 국면 전환 직후 구동 금지 시각
         self.rest_since: float | None = None    # 기계 국면이 rest 로 들어간 시각
@@ -446,7 +453,7 @@ class DriveState:
                 return
             self._aim(t, axis, d)
         elif key in ("PLUS", "MINUS"):
-            lim = VERIFY_RPM if self.locked else self.max_rpm
+            lim = self.max_rpm
             new = self.setpoint + (self.step if key == "PLUS" else -self.step)
             self.setpoint = max(self.step, min(lim, new))
             if self.axis == "rot":
@@ -1169,8 +1176,6 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--pico-hz", type=int, default=50)
     t.add_argument("--dmm", type=float, default=None,
                    help="DMM 버스전압 V — 정지 구간 확인점")
-    t.add_argument("--no-verify", action="store_true",
-                   help="시작 저속 방향 확인을 건너뛴다 (권장하지 않는다)")
     t.add_argument("--unsafe-max", action="store_true",
                    help=f"--max-rpm 의 코드 상한 {MAX_RPM_CEIL} 을 푼다")
 
@@ -1265,7 +1270,7 @@ def main() -> int:
     조종자 없이 주행한다. 그 경우 워치독이 유일한 보호다.
 
   조작  ↑/w 전진   ↓/s 후진   ←/→ 좌/우 선회   space/ESC 정지
-        +/- 속도   k 킵얼라이브   m 표식   q 종료   Ctrl-C 중단
+        PgUp/PgDn 속도 (+/- 도 됨)   k 킵얼라이브   m 표식   q 종료   Ctrl-C 중단
   국면  t 이동 (= 예열 겸함, 참고 자료)      r 시험 (= 판정 자료)
         정지 상태에서만 바뀌고, 바꾼 뒤 {args.phase_rest:.0f} s 는 더 정지해 있어야 한다
         (그 정지가 영점 앵커다). **시험 국면에서는 선회가 거부된다.**
@@ -1401,50 +1406,14 @@ def main() -> int:
         st.last_input = bench.now()
         guard = GroundGuard(args.stall_sec, args.stall_grace, args.overspeed)
 
-        if not args.no_verify:
-            st.locked = True
-            say(f"[V] 방향 확인 — {VERIFY_RPM} rpm 전진 {VERIFY_SEC} s. 앞으로 가는지 볼 것.")
-            bench.poll()
-            b = dict(bench.log[-1])
-            bench.set_cmd(targets_of(VERIFY_RPM, "lin"))
-            t0 = bench.now()
-            while bench.now() - t0 < VERIFY_SEC and not bench.abort:
-                bench.poll()
-                pump()
-            bench.set_cmd(targets_of(0, "lin"))
-            t0 = bench.now()
-            while bench.now() - t0 < 2.0 and not bench.abort:
-                bench.poll()
-                pump()
-            r = bench.log[-1]
-            d1 = (r.get("pos1") or 0) - (b.get("pos1") or 0)
-            d2 = (r.get("pos2") or 0) - (b.get("pos2") or 0)
-            straight, spin = (d1 - d2) / 2, (d1 + d2) / 2
-            say(f"    Δpos1 {d1:+.0f}  Δpos2 {d2:+.0f}  →  직진분 {straight:+.0f} · "
-                f"회전분 {spin:+.0f} counts")
-            if abs(spin) > abs(straight):
-                say("!! 회전분이 직진분보다 크다 — 거울 부호가 뒤집혔을 수 있다. 중단한다.")
-                return 1
-            if bench.abort:
-                say(f"!! {bench.abort}")
-                return 1
+        # ⚠ 예전에는 여기서 200 rpm 전진 1.5 s 를 돌려 부호를 확인하고 `y` 를 받았다.
+        #   2026-09-03 에 뺐다 — 조작자가 직접 돌리는 도구에 시작 의례를 두면 그만큼
+        #   실제 시험이 밀린다. 그 절차의 **자동 부분**(지령↔실측 어긋남)은 주루프의
+        #   mirror_since 검사로 옮겼고, **물리 확인**(정말 앞으로 가는가)은 조작자
+        #   몫이 됐다. 첫 ↑ 를 짧게 눌러 보는 것으로 갈음할 것.
 
         with KeyReader() as kr:
             keys = kr
-            if not args.no_verify:
-                say("    앞으로 갔으면 y, 아니면 아무 키나 (종료)")
-                t0 = time.monotonic()
-                ans = ""
-                while time.monotonic() - t0 < 30 and not ans:
-                    if select.select([sys.stdin], [], [], 0.2)[0]:
-                        ans = os.read(kr.fd, 16).decode("utf-8", "replace")[:1]
-                if ans.lower() != "y":
-                    say("확인되지 않음 — 종료한다.")
-                    return 1
-                st.locked = False
-                st.last_input = bench.now()
-                say(f"    확인됨. 상한 {args.max_rpm} rpm 해제.")
-
             say(f"[B] 수동 주행 — 국면 {PHASE_KO[st.sphase]} · q 종료")
             armed[0] = True          # 여기부터 디스크에 쓴다. 워터마크가 A 창까지
             bench.poll()             # 거슬러 올라가 한꺼번에 따라잡는다
@@ -1455,6 +1424,7 @@ def main() -> int:
             # poll() 은 루프 뒤쪽이라 첫 반복에는 아직 row 가 없다. 실측값은
             # 폴 결과를 다음 반복으로 넘기는 변수로 들고 간다.
             rpm_absmax, v_lin, v_rot = 0.0, 0.0, 0.0
+            mirror_since = 0.0       # 직진 지령인데 회전분이 더 큰 상태의 시작 시각
 
             while True:
                 t = bench.now()
@@ -1510,6 +1480,29 @@ def main() -> int:
                 why = guard.check(t, ph, row, st.cmd_now)
                 if why:
                     st.soft_stop(t, why)
+
+                # 직진 지령인데 **실측이** 제자리 선회로 나오는 상태를 잡는다.
+                #
+                # ⚠ 무엇을 잡고 무엇을 못 잡는지 분명히 해 둔다. 이건 지령과 실측
+                #   사이의 어긋남만 본다 — 한쪽 컨트롤러의 회전방향 설정이 달라졌거나,
+                #   한 바퀴가 반대로 도는 경우다. **바퀴가 물리적으로 거꾸로 달린
+                #   경우는 못 잡는다**: 그때도 모터는 지령대로 회전을 보고하므로
+                #   v_rot 이 0 이다. 그건 사람 눈으로만 갈린다. 2026-09-03 이전에
+                #   있던 시작 확인 절차의 자동 부분이 이것이고, `y` 로 묻던 물리
+                #   확인 쪽은 **조작자 몫으로 넘어갔다.**
+                #
+                # ⚠ 반드시 `ph` 를 이번 반복 값으로 받은 **뒤**에 있어야 한다.
+                #   램프 구간은 ph 가 "ramp" 라 자동으로 빠진다. 1 s 를 요구하는
+                #   것은 방향 전환 순간의 과도 상태를 잡지 않기 위해서다.
+                if (ph == "drive" and st.axis == "lin" and abs(st.cmd_now) >= 100
+                        and abs(v_rot) > abs(v_lin)):
+                    mirror_since = mirror_since or t
+                    if t - mirror_since > 1.0:
+                        st.soft_stop(t, f"직진 지령 {st.cmd_now:+.0f} 인데 회전분"
+                                        f"({v_rot:+.0f})이 직진분({v_lin:+.0f})보다 "
+                                        f"크다 — 거울 부호 규약 확인 필요")
+                else:
+                    mirror_since = 0.0
                 dpos, spin = counts_of(row, base_pos)
                 if t - t_start > args.max_sec:
                     st.soft_stop(t, f"세션 상한 {args.max_sec:.0f}s", fatal=False)
@@ -1768,7 +1761,9 @@ def self_test() -> int:
                       (b"\x1bOP", ["ESC"]), (b"\x1bOQ", ["ESC"]),
                       (b"\x1bOR", ["ESC"]), (b"\x1bOS", ["ESC"]),
                       (b"\x1b[<0;10;20M", ["ESC"]), (b"\x1b[8;24;80t", ["ESC"]),
-                      (b"\x1b[5~", ["ESC"]), (b"\x1b[1;2A", ["UP"]),
+                      (b"\x1b[5~", ["PLUS"]), (b"\x1b[6~", ["MINUS"]),
+                      (b"\x1b[5;2~", ["PLUS"]), (b"\x1b[3~", ["ESC"]),
+                      (b"\x1b[1;2A", ["UP"]),
                       (b"wsq", ["UP", "DOWN", "QUIT"]),
                       (b"tr", ["PH_MOVE", "PH_MEAS"]),
                       (b"\x03", ["ABORT"])]:
@@ -1924,10 +1919,6 @@ def self_test() -> int:
     for _ in range(20):
         st5.on_key(0.0, "MINUS")
     ck("⑤ - 하한", st5.setpoint == 100, f"{st5.setpoint}")
-    st5.locked = True
-    for _ in range(10):
-        st5.on_key(0.0, "PLUS")
-    ck("⑤ locked 상한", st5.setpoint == VERIFY_RPM, f"{st5.setpoint}")
     st6 = DriveState(_args_for_test())
     st6.on_key(0.0, "LEFT")
     ck("⑥ 선회는 turn_rpm", abs(st6.ramp.target - 300) < 1e-6, f"{st6.ramp.target}")
