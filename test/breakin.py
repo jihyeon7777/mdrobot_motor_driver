@@ -727,8 +727,27 @@ class ReplayBench:
         return self._t
 
 
-def reanalyze(tag: str, dmm: float | None) -> int:
-    """저장된 로그만으로 사이클 표를 다시 낸다. **모터도 시리얼도 건드리지 않는다.**"""
+def reanalyze(tag: str, dmm: float | None, overwrite: bool = False) -> int:
+    """저장된 로그만으로 사이클 표를 다시 낸다. **모터도 시리얼도 건드리지 않는다.**
+
+    ⚠ 산출값은 라이브 실행과 **같지 않다.** 어긋나는 자(ruler)가 둘이다:
+
+      ① **재생 격자** — 폴 시각이 달라 구간 평균이 0.2% 어긋난다
+         (08-27 `cold1` 라이브 12.2105 → 재분석 12.2374).
+      ② **상수 판** — 환산은 언제나 `import` 시점의 상수로 한다. 08-28 이전 로그를
+         오늘 다시 돌리면 절대 전류·전력이 id1 −4.90% · id2 −1.83% 움직인다
+         (실측: `cold1` 12.2374 → 11.6311, 09-03).
+
+    채널 **안의** 비(`asym*`)는 둘 다에 면역이다 — 소수점 끝자리까지 같다. 문서에
+    인쇄된 절대값은 전부 라이브 쪽이므로 **두 계열은 같은 표에 섞으면 안 된다.**
+
+    그런데 예전에는 캐노니컬 이름을 그대로 덮어썼다. 그래서 08-27 `cold1` 의 라이브
+    사이클 CSV 가 소실됐고(20260828 §3 · 20260829 §3.4), 08-26 `bi*` 도 일괄 재작성돼
+    출처를 못 가린다(20260828 §296). 이제 기본값은 `_reanalyze` 접미사로 따로 쓴다.
+
+    `overwrite=True` 는 옛 동작을 명시적으로 되살린다 — **라이브 CSV 가 애초에 없는
+    복구 상황에만** 쓸 것.
+    """
     outdir = REPO / "test" / "logs"
     pf, mf, kf = (outdir / f"breakin_{k}_{tag}.csv" for k in ("pico", "motor", "marks"))
     missing = [p.name for p in (pf, mf, kf) if not p.exists()]
@@ -803,18 +822,31 @@ def reanalyze(tag: str, dmm: float | None) -> int:
     print_summary(cyc_recs, ids)
     rows = volt_table(pico, bench, ids, dmm)
 
-    if cyc_recs:
-        cf = outdir / f"breakin_cycles_{tag}.csv"
-        with cf.open("w", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=list(cyc_recs[0]))
-            w.writeheader(); w.writerows(cyc_recs)
-        print(f"\n사이클 {len(cyc_recs)} 개 → {cf.name} (덮어씀)")
-    if rows:
-        vf = outdir / f"breakin_volt_{tag}.csv"
-        with vf.open("w", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=list(rows[0]))
-            w.writeheader(); w.writerows(rows)
-        print(f"정지구간 전압 {len(rows)} 개 → {vf.name} (덮어씀)")
+    # ⚠ 캐노니컬 이름은 라이브값의 자리다. 재분석은 0.2% 다른 자에서 나온 별개 산출이라
+    #   따로 쓴다 — 덮어쓰기는 되돌릴 수 없고, 이미 두 번 자료를 잃었다.
+    suffix = "" if overwrite else "_reanalyze"
+    print()
+    for kind, label, recs in (("cycles", "사이클", cyc_recs),
+                              ("volt", "정지구간 전압", rows)):
+        if not recs:
+            continue
+        out = outdir / f"breakin_{kind}_{tag}{suffix}.csv"
+        live = outdir / f"breakin_{kind}_{tag}.csv"
+        with out.open("w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=list(recs[0]))
+            w.writeheader(); w.writerows(recs)
+        if overwrite:
+            note = "⚠ 덮어씀 — 라이브값이 사라졌다"
+        elif live.exists():
+            note = f"{live.name} 은 그대로 둔다"
+        else:
+            note = "라이브 CSV 는 없다 (복구가 필요하면 --overwrite)"
+        print(f"{label} {len(recs)} 개 → {out.name} ({note})")
+    if not overwrite:
+        print("⚠ 재분석은 라이브와 두 군데서 어긋난다 — 재생 격자 0.2%, 그리고 08-28 이전\n"
+              "   로그라면 상수 판 차이로 절대값이 id1 −4.90% · id2 −1.83% (cold1 실측\n"
+              "   12.2374 → 11.6311). 채널 안의 비는 면역이다. 문서가 인용하는 절대값은\n"
+              "   라이브 쪽이니 두 계열을 같은 표에 섞지 말 것.")
     return 0
 
 
@@ -845,11 +877,17 @@ def main() -> int:
                     help="DMM 버스전압 V — 정지 구간 GP26 과 대조해 확정 상수를 확인한다 "
                          "(상수 재정의는 전용 교정의 몫)")
     ap.add_argument("--reanalyze", action="store_true",
-                    help="저장된 로그만으로 사이클 표를 다시 낸다. 하드웨어를 건드리지 않는다")
+                    help="저장된 로그만으로 사이클 표를 다시 낸다. 하드웨어를 건드리지 않는다. "
+                         "결과는 breakin_*_<tag>_reanalyze.csv 로 따로 쓴다")
+    ap.add_argument("--overwrite", action="store_true",
+                    help="--reanalyze 와 함께 — 재분석 결과를 라이브 CSV 이름에 덮어쓴다. "
+                         "라이브값은 되돌릴 수 없이 사라진다. 라이브 CSV 가 없는 복구용")
     args = ap.parse_args()
 
     if args.reanalyze:
-        return reanalyze(args.tag, args.dmm)
+        return reanalyze(args.tag, args.dmm, args.overwrite)
+    if args.overwrite:
+        ap.error("--overwrite 는 --reanalyze 와 함께만 쓴다")
 
     ids = tuple(sorted(set(args.id))) if args.id else (1, 2)
     speeds = [int(x) for x in args.speeds.split(",") if x.strip()]
