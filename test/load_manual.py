@@ -27,7 +27,9 @@
 
 조작
   ↑ / w   전진        ↓ / s   후진        space / ESC   정지
-  ← / →   좌 / 우 제자리 선회 (`--turn-rpm` 고정. +/- 로 안 바뀐다)
+  ← / a   좌 제자리 선회        → / d   우 제자리 선회
+          (`--turn-rpm` 고정. 속도 키로 안 바뀐다. **대문자 A/D 는 안 듣는다** —
+           화살표 escape 의 final 과 같은 바이트라 오발 경로가 생긴다)
   PgUp    설정 rpm 증가            PgDn    감소   (+ / - 도 그대로 듣는다)
   k       킵얼라이브 (아무것도 안 바꾸고 워치독만 연장)
   m       표식 — 노면이 바뀐 지점 등을 이벤트 로그에 남긴다
@@ -151,14 +153,23 @@ PUMP_DT = 0.25           # 증분 저장 주기 s — 디스크 I/O 를 제어 �
 #   지금은 parse_keys 가 CSI/SS3 를 통째로 삼키므로 예약 문자 목록 자체가 필요 없다.
 KEYMAP = {
     b"w": "UP", b"W": "UP", b"s": "DOWN", b"S": "DOWN",
+    # ⚠ 선회는 **소문자만** 건다. 대문자 A/D 는 화살표 CSI 의 final 바이트라
+    #   위험하다: KeyReader 는 미완성 escape 가 ESC_HOLD_S 를 넘기면 ESC 를 내보내고
+    #   나머지를 다시 parse_keys 에 넣는다(:302). 느린 링크에서 `ESC [` 까지만 와서
+    #   끊기면 `A` 가 홀로 남아 다음 읽기에 평문으로 들어오고, 그때 KEYMAP 에 A 가
+    #   있으면 **누르지도 않은 선회가 나간다.** 소문자에는 그 경로가 없다.
+    b"a": "LEFT", b"d": "RIGHT",
     b" ": "STOP", b"+": "PLUS", b"=": "PLUS", b"-": "MINUS", b"_": "MINUS",
     b"q": "QUIT", b"Q": "QUIT", b"k": "KEEP", b"K": "KEEP",
     b"m": "MARK", b"M": "MARK", b"\x03": "ABORT",
     b"t": "PH_MOVE", b"T": "PH_MOVE",      # 국면 — 이동
     b"r": "PH_MEAS", b"R": "PH_MEAS",      # 국면 — 시험
 }
-# 화살표 4 종. ←/→ 는 제자리 선회다 (직진 키 w/s 처럼 a/d 를 쓸 수는 없다 —
-# 소문자라도 미완성 escape 잔재와 섞이면 화살표 꼬리와 구별이 안 된다).
+# 화살표 4 종. ←/→ 는 제자리 선회다.
+# ⚠ 예전 주석은 "a/d 를 쓸 수는 없다 — 미완성 escape 잔재와 구별이 안 된다" 였는데
+#   **소문자에 대해서는 틀린 말이었다.** 화살표 final 은 대문자 A~D 뿐이라 소문자
+#   a/d 가 그 잔재와 겹칠 경로가 없다. 위험한 것은 대문자를 KEYMAP 에 거는 쪽이고,
+#   그건 안 한다 (KEYMAP 주석 참조). 2026-09-03 에 a/d 를 열었다.
 ARROW = {b"A": "UP", b"B": "DOWN", b"C": "RIGHT", b"D": "LEFT"}
 # CSI 중 final 만으로는 안 갈리는 것들 — (앞 파라미터, final) 로 본다.
 # PgUp/PgDn 은 `ESC [ 5 ~` / `ESC [ 6 ~` 이고 final 이 둘 다 `~` 다. Home(1~)·
@@ -1269,7 +1280,7 @@ def main() -> int:
   ⚠ tmux / nohup 아래에서 실행하지 말 것 — SSH 가 끊겨도 프로세스가 살아남아
     조종자 없이 주행한다. 그 경우 워치독이 유일한 보호다.
 
-  조작  ↑/w 전진   ↓/s 후진   ←/→ 좌/우 선회   space/ESC 정지
+  조작  ↑/w 전진   ↓/s 후진   ←/a 좌선회   →/d 우선회   space/ESC 정지
         PgUp/PgDn 속도 (+/- 도 됨)   k 킵얼라이브   m 표식   q 종료   Ctrl-C 중단
   국면  t 이동 (= 예열 겸함, 참고 자료)      r 시험 (= 판정 자료)
         정지 상태에서만 바뀌고, 바꾼 뒤 {args.phase_rest:.0f} s 는 더 정지해 있어야 한다
@@ -1745,6 +1756,10 @@ def self_test() -> int:
                       (b"\x1b[5;2~", ["PLUS"]), (b"\x1b[3~", ["ESC"]),
                       (b"\x1b[1;2A", ["UP"]),
                       (b"wsq", ["UP", "DOWN", "QUIT"]),
+                      (b"ad", ["LEFT", "RIGHT"]),
+                      # ⚠ 대문자는 **안 걸려야 한다.** 걸리면 끊긴 화살표의 꼬리가
+                      #   선회 지령이 된다 (KEYMAP 주석).
+                      (b"AD", []), (b"BC", []),
                       (b"tr", ["PH_MOVE", "PH_MEAS"]),
                       (b"\x03", ["ABORT"])]:
         got, rest = parse_keys(buf)
