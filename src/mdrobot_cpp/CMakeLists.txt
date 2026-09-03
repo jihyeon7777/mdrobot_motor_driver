@@ -49,6 +49,7 @@ if(BUILD_TESTING)
     test/test_status.cpp
     test/test_units.cpp
     test/test_device.cpp
+    test/test_transport.cpp
   )
   foreach(TEST_SRC ${TEST_SOURCES})
     get_filename_component(TEST_NAME ${TEST_SRC} NAME_WE)

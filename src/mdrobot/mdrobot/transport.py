@@ -24,7 +24,7 @@ def interframe_delay(baudrate: int | None) -> float:
     hidden on adapters whose USB latency timer supplies the gap by accident
     (FTDI defaults to 16 ms), so it only surfaces once that timer is lowered.
     """
-    if not baudrate or baudrate > 19200:
+    if not baudrate or baudrate <= 0 or baudrate > 19200:
         return 0.00175
     return 38.5 / baudrate
 

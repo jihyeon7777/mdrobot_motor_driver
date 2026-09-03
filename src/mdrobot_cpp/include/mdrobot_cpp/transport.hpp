@@ -12,6 +12,13 @@
 
 namespace mdrobot {
 
+/// Modbus RTU inter-frame silence in seconds: 3.5 character times (11 bits each).
+///
+/// The spec fixes the gap at 1.75 ms above 19200 baud. Mirrors
+/// `mdrobot.transport.interframe_delay` in the Python library — keep both in
+/// step (see CLAUDE.md on the Python/C++ mirroring rule).
+double interframe_delay(int baudrate);
+
 /// Abstract transport interface — the protocol layer depends on this.
 class Transport {
  public:

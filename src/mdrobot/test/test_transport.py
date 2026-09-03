@@ -4,11 +4,13 @@ No real pyserial port is opened; a fake is injected via SerialTransport.from_ser
 Read accumulation / frame assembly is verified together with ModbusClient.
 """
 
+import time
+
 import pytest
 
 from mdrobot.crc import append_crc
 from mdrobot.protocol import ModbusClient
-from mdrobot.transport import SerialTransport, Transport
+from mdrobot.transport import SerialTransport, Transport, interframe_delay
 
 
 class FakeSerial:
@@ -113,3 +115,69 @@ def test_modbus_client_short_read_raises():
     client = ModbusClient(SerialTransport.from_serial(fake), slave_id=1)
     with pytest.raises(IncompleteResponseError):
         client.read_register(1)
+
+
+# --- Modbus RTU inter-frame gap -------------------------------------------
+# Mirrors test_transport.cpp — keep both in step (CLAUDE.md mirroring rule).
+
+
+class TestInterframeDelay:
+    """The pure computation: 3.5 character times, pinned above 19200 baud."""
+
+    @pytest.mark.parametrize("baud", [38400, 57600, 115200])
+    def test_pinned_above_19200(self, baud):
+        assert interframe_delay(baud) == 0.00175
+
+    @pytest.mark.parametrize("baud", [19200, 9600, 4800])
+    def test_three_and_a_half_characters_at_or_below(self, baud):
+        # 3.5 characters x 11 bits = 38.5 bit times.
+        assert interframe_delay(baud) == 38.5 / baud
+
+    def test_default_rig_baud_is_two_milliseconds(self):
+        # The rig runs 19200 8N1; this is the gap every transaction actually pays.
+        assert interframe_delay(19200) == pytest.approx(0.002005, abs=1e-6)
+
+    @pytest.mark.parametrize("baud", [None, 0, -1])
+    def test_bogus_baud_falls_back_to_the_pinned_gap(self, baud):
+        # Never hand _wait_interframe a zero or negative sleep.
+        assert interframe_delay(baud) == 0.00175
+
+    def test_shrinks_monotonically_with_baud(self):
+        assert interframe_delay(4800) > interframe_delay(9600)
+        assert interframe_delay(9600) > interframe_delay(19200)
+        assert interframe_delay(19200) > interframe_delay(38400)
+
+
+class TestWriteHoldsOff:
+    """write() must not start a frame until the bus has been silent long enough."""
+
+    def test_first_write_does_not_wait(self):
+        # Nothing has touched the bus yet, so there is no gap to honour.
+        t = SerialTransport.from_serial(FakeSerial())
+        start = time.monotonic()
+        t.write(b"\x01\x03")
+        assert time.monotonic() - start < 0.001
+
+    def test_second_write_waits_out_the_gap(self):
+        t = SerialTransport.from_serial(FakeSerial())
+        t.write(b"\x01\x03")
+        start = time.monotonic()
+        t.write(b"\x01\x03")
+        # 19200 baud -> 2.005 ms. Allow scheduler slop but require most of it.
+        assert time.monotonic() - start >= 0.0018
+
+    def test_read_also_counts_as_bus_activity(self):
+        # A reply occupies the bus too; the next request must clear it as well.
+        t = SerialTransport.from_serial(FakeSerial(b"\xff\xff"))
+        t.read(2)
+        start = time.monotonic()
+        t.write(b"\x01\x03")
+        assert time.monotonic() - start >= 0.0018
+
+    def test_gap_already_elapsed_costs_nothing(self):
+        t = SerialTransport.from_serial(FakeSerial())
+        t.write(b"\x01\x03")
+        time.sleep(0.005)                       # longer than the 2.005 ms gap
+        start = time.monotonic()
+        t.write(b"\x01\x03")
+        assert time.monotonic() - start < 0.001

@@ -15,6 +15,13 @@
 
 namespace mdrobot {
 
+double interframe_delay(int baudrate) {
+  // 3.5 character times at 11 bits each. Above 19200 baud the spec pins the gap
+  // at 1.75 ms rather than letting it shrink further.
+  if (baudrate <= 0 || baudrate > 19200) return 0.00175;
+  return 38.5 / baudrate;
+}
+
 static speed_t to_speed(int baudrate) {
   switch (baudrate) {
     case 9600:   return B9600;
@@ -80,9 +87,8 @@ SerialTransport::SerialTransport(const std::string& port, int baudrate,
   // the frame boundary and silently drops the request. This stays hidden on
   // adapters whose USB latency timer supplies the gap by accident (FTDI
   // defaults to 16 ms), so it only surfaces once that timer is lowered.
-  const double gap = (baudrate > 19200) ? 0.00175 : 38.5 / baudrate;
   interframe_ = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-      std::chrono::duration<double>(gap));
+      std::chrono::duration<double>(interframe_delay(baudrate)));
 
   // Settle + flush (same as Python: USB-serial boot noise mitigation).
   if (settle > 0) {
