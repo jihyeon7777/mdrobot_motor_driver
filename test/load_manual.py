@@ -1407,10 +1407,13 @@ def main() -> int:
         guard = GroundGuard(args.stall_sec, args.stall_grace, args.overspeed)
 
         # ⚠ 예전에는 여기서 200 rpm 전진 1.5 s 를 돌려 부호를 확인하고 `y` 를 받았다.
-        #   2026-09-03 에 뺐다 — 조작자가 직접 돌리는 도구에 시작 의례를 두면 그만큼
-        #   실제 시험이 밀린다. 그 절차의 **자동 부분**(지령↔실측 어긋남)은 주루프의
-        #   mirror_since 검사로 옮겼고, **물리 확인**(정말 앞으로 가는가)은 조작자
-        #   몫이 됐다. 첫 ↑ 를 짧게 눌러 보는 것으로 갈음할 것.
+        #   2026-09-03 에 **통째로 뺐다** — 조작자가 직접 돌리는 도구라 시작 의례를
+        #   두면 그만큼 실제 시험이 밀린다. 지령과 실측의 어긋남을 주루프에서 보는
+        #   판도 잠깐 뒀다가 같이 뺐다.
+        #
+        #   **부호 확인은 조작자 몫이다.** 첫 ↑ 를 짧게 눌러 앞으로 가는지 보면 된다.
+        #   손을 떼면 워치독이 세우므로 확인 비용이 키 한 번이다. 되돌릴 일이 있으면
+        #   이 주석을 단서로 git 이력에서 찾을 것.
 
         with KeyReader() as kr:
             keys = kr
@@ -1424,7 +1427,6 @@ def main() -> int:
             # poll() 은 루프 뒤쪽이라 첫 반복에는 아직 row 가 없다. 실측값은
             # 폴 결과를 다음 반복으로 넘기는 변수로 들고 간다.
             rpm_absmax, v_lin, v_rot = 0.0, 0.0, 0.0
-            mirror_since = 0.0       # 직진 지령인데 회전분이 더 큰 상태의 시작 시각
 
             while True:
                 t = bench.now()
@@ -1481,28 +1483,6 @@ def main() -> int:
                 if why:
                     st.soft_stop(t, why)
 
-                # 직진 지령인데 **실측이** 제자리 선회로 나오는 상태를 잡는다.
-                #
-                # ⚠ 무엇을 잡고 무엇을 못 잡는지 분명히 해 둔다. 이건 지령과 실측
-                #   사이의 어긋남만 본다 — 한쪽 컨트롤러의 회전방향 설정이 달라졌거나,
-                #   한 바퀴가 반대로 도는 경우다. **바퀴가 물리적으로 거꾸로 달린
-                #   경우는 못 잡는다**: 그때도 모터는 지령대로 회전을 보고하므로
-                #   v_rot 이 0 이다. 그건 사람 눈으로만 갈린다. 2026-09-03 이전에
-                #   있던 시작 확인 절차의 자동 부분이 이것이고, `y` 로 묻던 물리
-                #   확인 쪽은 **조작자 몫으로 넘어갔다.**
-                #
-                # ⚠ 반드시 `ph` 를 이번 반복 값으로 받은 **뒤**에 있어야 한다.
-                #   램프 구간은 ph 가 "ramp" 라 자동으로 빠진다. 1 s 를 요구하는
-                #   것은 방향 전환 순간의 과도 상태를 잡지 않기 위해서다.
-                if (ph == "drive" and st.axis == "lin" and abs(st.cmd_now) >= 100
-                        and abs(v_rot) > abs(v_lin)):
-                    mirror_since = mirror_since or t
-                    if t - mirror_since > 1.0:
-                        st.soft_stop(t, f"직진 지령 {st.cmd_now:+.0f} 인데 회전분"
-                                        f"({v_rot:+.0f})이 직진분({v_lin:+.0f})보다 "
-                                        f"크다 — 거울 부호 규약 확인 필요")
-                else:
-                    mirror_since = 0.0
                 dpos, spin = counts_of(row, base_pos)
                 if t - t_start > args.max_sec:
                     st.soft_stop(t, f"세션 상한 {args.max_sec:.0f}s", fatal=False)
