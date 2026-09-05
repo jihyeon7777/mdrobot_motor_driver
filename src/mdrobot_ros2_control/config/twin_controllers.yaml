@@ -79,15 +79,36 @@ diff_cont:
     #   The old value 0.00307 implied a 92 mm wheel (7.25 inch) and was 1.38x off:
     #   commanded speed ran ~38% fast and odometry read ~28% slow. Nobody caught it
     #   because the twin path has never been driven on hardware (README: experimental).
-    #   Cross-check: 900 counts per wheel revolution (30 counts/motor-rev x 30:1)
-    #   and a 0.798 m circumference reproduce the distances in
-    #   docs/ground_load_20260903.csv.
+    #
+    # ⚠⚠ STILL WRONG — 2026-09-05. The derivation above omits a TIMING BELT stage
+    #   between the gearbox output and the wheel (22 T motor side : 17 T wheel side,
+    #   user-confirmed 09-05). No file in this repo knew about it, so every
+    #   counts->metres conversion here and in test/ has been off.
+    #
+    #   Measured directly by hand-pushing a 6.000 m taped course with torque off
+    #   (test/wheel_circ_push.py, zero traction => zero slip):
+    #
+    #       0.7613 mm per count      <- the only thing actually measured
+    #       vs 0.8867 mm/count assumed here (900 counts/rev x 0.798 m)  = -14.1%
+    #
+    #   Splitting that into (counts per motor-rev) x (gearbox) x (belt) x (tyre)
+    #   does NOT close yet: a 250 mm tyre needs ~1031 counts/wheel-rev, which is
+    #   neither 30:1 (900) nor 30x17/22 (696) nor 30x22/17 (1165). The suspect is
+    #   "30 counts per motor-rev", which this repo has never measured -- CLAUDE.md
+    #   says to measure it, not to hardcode it.
+    #
+    #   DO NOT guess a new value. Roll the tyre exactly 3 revolutions along a taped
+    #   course: counts/wheel-rev = dcount/3 and loaded circumference = distance/3,
+    #   which pins the belt direction and counts_per_rev at once. Then
+    #       wheel_radius = 0.0007613 m/count * counts_per_rev / (2*pi)
+    #   Left at the old value so the error stays visible rather than half-fixed.
+    #   See docs/hardware_test_20260905.md section 6.
     wheel_radius: 0.004233
 
-    # ⚠ NOT measured. 0.4 m has been carried since the twin mode was written and
-    #   no session has ever put a tape across the contact patches. Odometry yaw
-    #   scales directly with it — measure before trusting any heading.
-    wheel_separation: 0.4
+    # ✅ MEASURED 2026-09-05 — 451 mm centre-to-centre between the wheels (tape).
+    #   The old 0.4 had been carried since the twin mode was written and was 13%
+    #   low; odometry yaw scales directly with this, so headings read 13% large.
+    wheel_separation: 0.451
     # State feedback is in SI when counts_per_rev is set in the URDF.
     open_loop: false
     base_frame_id: base_link
