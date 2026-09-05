@@ -31,15 +31,28 @@
           (`--turn-rpm` 고정. 속도 키로 안 바뀐다. **대문자 A/D 는 안 듣는다** —
            화살표 escape 의 final 과 같은 바이트라 오발 경로가 생긴다)
   PgUp    설정 rpm 증가            PgDn    감소   (+ / - 도 그대로 듣는다)
-  k       킵얼라이브 (아무것도 안 바꾸고 워치독만 연장)
+  k       킵얼라이브 — 아무것도 안 바꾸고 유지만 연장한다. 자동반복이 없는
+          터미널에서 데드맨 대신 쓴다
   m       표식 — 노면이 바뀐 지점 등을 이벤트 로그에 남긴다
   t / r      국면 — 이동 / 시험
   q       정상 종료   Ctrl-C  중단
 
-  **토글식이다.** 한 번 누르면 계속 간다. 다만 `--watchdog` 초 동안 아무 조작이
-  없으면 자동으로 감속 정지한다. 키를 누르고 있으면 터미널 자동반복이 워치독을
-  계속 연장하므로, 떼면 멈추는 데드맨처럼도 쓸 수 있다. **5 s 유지가 필요한 시험
-  구동에서는 그렇게 쓰는 것이 정석이다** — `k` 를 따로 칠 일이 없어진다.
+  **데드맨이다 — 키에서 손을 떼면 선다.** 터미널 자동반복이 키를 누르고 있는 동안
+  입력을 계속 넣어 주고, 그것이 끊기면 `--release-stop`(기본 0.1 s) 뒤에 **감속
+  정지**에 들어간다. 5 s 유지가 필요한 시험 구동은 그냥 키를 누르고 있으면 된다.
+
+  ⚠ 자동반복은 **첫 키를 누른 뒤 곧바로 시작하지 않는다** — X11 기본 660 ms,
+    리눅스 콘솔 기본 250 ms 를 쉬었다가 반복한다. 0.1 s 를 그대로 쓰면 그 공백에서
+    매번 오발 정지한다. 그래서 유예가 **2 단**이다: 반복이 실제로 관측되기 전에는
+    `--hold-arm`(기본 0.8 s), 관측된 뒤에야 `--release-stop`(0.1 s) 으로 조인다.
+    이 터미널의 실제 값은 `--key-probe` 로 잰다.
+
+  **`space` / `ESC` 는 급정지다** — 램프를 타지 않고 지령을 그 자리에서 0 으로
+  떨어뜨린다. 손을 떼서 서는 것(감속)과 구분되는 조작자의 명시적 정지다.
+  ⚠ `DECEL_MIN_S`(회생 과전압 하한)를 의도적으로 우회하는 유일한 경로다.
+
+  2026-09-05 변경. 그전에는 토글식이었다 — 한 번 누르면 워치독 2 s 까지 계속 갔고
+  `space` 가 `--decel` 램프를 탔다. 1500 rpm 에서 손을 뗀 뒤 1.3 m 를 더 갔다.
 
   ✅ ←/→ 의 좌/우 라벨은 **2026-09-03 에 실물로 확정됐다** — `←` 를 눌렀더니 실제로
     좌회전했다. 08-14 §2 + 08-26 §2 에서 유도만 해 뒀던 것이 닫혔다.
@@ -363,6 +376,18 @@ class Ramp:
         moved = self.rate * (t - self.t0)
         return self.target if moved >= abs(d) else self.v0 + math.copysign(moved, d)
 
+    def jump(self, t: float, target: float) -> None:
+        """램프를 건너뛰고 **즉시** 값을 바꾼다. `space` 급정지 전용이다.
+
+        ⚠ `DECEL_MIN_S`(0.4 s) 가 감속 하한을 두는 이유는 회생 과전압이다. 이 경로는
+          그 하한을 **의도적으로 우회한다** — 조작자가 급정지를 부른 상황에서는
+          회생 여지보다 정지 거리가 우선이라는 판단이다. 컨트롤러의 SLOW_DOWN 은
+          0 이므로 실제 감속은 컨트롤러가 낼 수 있는 최대가 된다.
+        """
+        self.v0 = self.target = float(target)
+        self.t0 = t
+        self.rate = 1.0
+
     def done(self, t: float) -> bool:
         return abs(self.value(t) - self.target) < 1e-6
 
@@ -392,8 +417,15 @@ class DriveState:
         self.turn_rpm = a.turn_rpm       # 선회 속도. ⚠ + / - 로 바뀌지 않는다
         self.max_rpm = a.max_rpm
         self.step = a.step
-        self.wd = a.watchdog
         self.wd_hard = a.watchdog_hard
+        # 데드맨 — 키에서 손을 떼면 release_stop 초 뒤 감속 정지. 다만 터미널
+        # 자동반복은 첫 키와 첫 반복 사이가 250~660 ms 나 되므로, 그 공백에서
+        # 오발하지 않도록 **2 단**으로 간다: 반복이 실제로 관측되기 전에는
+        # hold_arm 을 쓰고, 관측된 뒤에야 release_stop 으로 조인다.
+        self.hold_arm = a.hold_arm
+        self.release_stop = a.release_stop
+        self.hold_armed = False
+        self.have_input = False
         self.dwell = a.reverse_dwell
         self.phase_rest = a.phase_rest
         self.ramp = Ramp(a.accel, a.decel)
@@ -422,6 +454,11 @@ class DriveState:
         self.turn_seen = False           # 첫 선회 turn_check 이벤트를 한 번만 남긴다
         self.deny_at = -99.0             # 거부 이벤트 율제한 (자동반복이 로그를 채운다)
 
+    def grace_left(self, t: float) -> float:
+        """데드맨까지 남은 시간 s. 화면에 그대로 뜬다 — 조작자가 보는 유일한 예고다."""
+        grace = self.release_stop if self.hold_armed else self.hold_arm
+        return max(0.0, grace - (t - self.last_input))
+
     def log(self, t: float, kind: str, detail: str) -> None:
         self.events.append((round(t, 3), kind, detail))
 
@@ -444,6 +481,11 @@ class DriveState:
 
     def on_key(self, t: float, key: str) -> None:
         if key in LIVE_KEYS:
+            # 직전 입력과의 간격이 hold_arm 안이면 자동반복이 살아 있다는 증거다.
+            # 그때부터만 데드맨을 release_stop 으로 조인다.
+            if self.have_input and (t - self.last_input) <= self.hold_arm:
+                self.hold_armed = True
+            self.have_input = True
             self.last_input = t
             self.wd_fired = False
         if key == "ABORT":
@@ -457,7 +499,13 @@ class DriveState:
         if key == "QUIT":
             self.quit = True
         elif key in ("STOP", "ESC"):
-            self._aim(t, self.axis, 0)
+            # ★ 급정지 — 램프를 타지 않는다. 지령을 그 자리에서 0 으로 떨어뜨린다.
+            #   손을 떼서 서는 것(데드맨)과 구분되는 **조작자의 명시적 정지**다.
+            self.pending = None
+            self.dir = 0
+            self.hold_armed = False
+            self.ramp.jump(t, 0.0)
+            self.log(t, "state", "급정지 (space)")
         elif key in ("UP", "DOWN", "LEFT", "RIGHT"):
             axis = "lin" if key in ("UP", "DOWN") else "rot"
             d = +1 if key in ("UP", "LEFT") else -1
@@ -639,13 +687,23 @@ class DriveState:
                 why = "실측 정지 확인" if settled else "⚠ 감속 타임아웃 (실측이 안 멎었다)"
                 self.log(t, "state", f"{AIM_KO[(axis, d)]} {sp} 개시 — {why}")
 
-        # 워치독 1 단 — 감속 정지. 비상이 아니라 '주의 이탈' 이므로 급정지하지 않는다.
+        # 데드맨 — 키에서 손을 떼면 선다. 급정지가 아니라 **감속 정지**다
+        # (= 예전의 space 동작). 유지 중 자동반복이 확인되기 전에는 hold_arm 을 쓴다.
         idle = t - self.last_input
-        if not self.wd_fired and idle > self.wd and (self.dir or self.pending):
+        grace = self.release_stop if self.hold_armed else self.hold_arm
+        if not self.wd_fired and (self.dir or self.pending) and idle > grace:
+            held = self.hold_armed
             self.wd_fired = True
             self.pending = None
+            self.hold_armed = False
             self._aim(t, self.axis, 0)
-            self.log(t, "guard", f"워치독 {idle:.1f}s — 감속 정지")
+            self.log(t, "guard",
+                     f"손 뗌 {idle * 1000:.0f}ms — 감속 정지"
+                     + ("" if held else f" (미무장 · 유예 {grace:.2f}s)"))
+
+        # ⚠ 예전의 '워치독 1 단'(무입력 2 s → 감속 정지) 은 여기 있었는데 **걷어냈다.**
+        #   위 데드맨의 유예가 언제나 그보다 짧아(≤ hold_arm 0.8 s < 2.0 s) 도달할 수
+        #   없는 가지가 됐다. 바깥 안전망은 아래 2 단(경성)이 그대로 맡는다.
         # 워치독 2 단 — 감속조차 안 먹으면 출력을 끊는다. 소프트 정지를 태우지 않는다:
         # 1 단 감속이 이미 실패했다는 뜻이라 더 기다릴 근거가 없다.
         if idle > self.wd_hard and rpm_absmax > ZERO_RPM_EPS:
@@ -852,7 +910,7 @@ def draw(st: DriveState, row: dict, seg: Segmenter, pico, zero_ref,
          t: float, dpos: float, spin: float, args) -> None:
     icon = "↻전환대기" if st.pending else STATE_ICON.get((st.axis, st.dir), "■정지")
     if st.wd_fired:
-        icon = "⏱워치독"
+        icon = "✋손뗌"
     if st.stopping:
         icon = "◼정지중"
     a1, a2 = live_amps(pico, zero_ref)
@@ -867,11 +925,12 @@ def draw(st: DriveState, row: dict, seg: Segmenter, pico, zero_ref,
         goal = f"/{args.min_drive:.0f}" if cur["kind"] == "drive" else ""
         tail = f" [{cur['label']} {dur:4.1f}{goal}s{ok}]"
     dist = f"{dpos / COUNTS_PER_WHEEL_REV * WHEEL_CIRC:+6.1f}m"
-    wd = max(0.0, st.wd - (t - st.last_input))
+    hold = st.grace_left(t)
     line = (f"{PHASE_KO[st.sphase]} {icon} 설정{st.setpoint:4d} 지령{st.cmd_now:+7.0f} "
             f"실측{r1 if r1 is not None else '--':>6}/{r2 if r2 is not None else '--':>6} "
             f"I{a1:5.2f}/{a2:5.2f}A V{live_volt(pico):5.2f} "
-            f"WD{wd:4.1f}s t{t:6.0f}s d{dist} r{spin:+7.0f}{tail}")
+            f"{'HOLD' if st.hold_armed else 'hold'}{hold:4.2f}s "
+            f"t{t:6.0f}s d{dist} r{spin:+7.0f}{tail}")
     w = term_width()
     sys.stdout.write("\r" + line[:w].ljust(w))
     sys.stdout.flush()
@@ -1180,7 +1239,11 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--step", type=int, default=100, help="+/- 증감 폭 rpm")
     t.add_argument("--accel", type=float, default=2.0, help="0→설정 rpm 가속 시간 s")
     t.add_argument("--decel", type=float, default=1.5, help="설정 rpm→0 감속 시간 s")
-    t.add_argument("--watchdog", type=float, default=2.0, help="무입력 자동 감속정지 s")
+    t.add_argument("--release-stop", type=float, default=0.1,
+                   help="키에서 손을 뗀 뒤 감속 정지까지 s (자동반복 확인 후)")
+    t.add_argument("--hold-arm", type=float, default=0.8,
+                   help="자동반복이 확인되기 전 유예 s. 터미널의 반복 시작 지연"
+                        "(250~660 ms)보다 커야 한다 — --key-probe 로 잴 것")
     t.add_argument("--watchdog-hard", type=float, default=5.0,
                    help="이만큼 무입력인데 아직 돌면 출력 차단 s")
     t.add_argument("--reverse-dwell", type=float, default=0.7,
@@ -1208,15 +1271,93 @@ def build_parser() -> argparse.ArgumentParser:
                    help="저장된 load_* 로그만으로 요약을 다시 낸다")
     o.add_argument("--dry-run", action="store_true",
                    help="--replay 와 함께 — marks CSV 를 다시 쓰지 않는다")
+    o.add_argument("--key-probe", nargs="?", type=float, const=8.0, default=None,
+                   metavar="SEC",
+                   help="터미널 자동반복 간격 측정 (기본 8 s). --hold-arm 을 정하는 근거")
     o.add_argument("--self-test", action="store_true",
                    help="순수 로직 자체 시험. 터미널도 필요 없다")
     return p
 
 
+def key_probe(argv: list[str]) -> int:
+    """터미널 자동반복 간격을 잰다 — **모터도 Pico 도 안 건드린다.**
+
+    `--hold-arm` 은 이 값 위에 있어야 한다. 자동반복은 첫 키를 누른 뒤 곧바로
+    반복하지 않고 **250~660 ms 쉬었다가** 시작하므로(X11 기본 660 ms, 리눅스 콘솔
+    기본 250 ms), 그보다 짧은 유예를 쓰면 키를 누르고 있는데도 매번 오발 정지한다.
+    본 루프와 **같은 `parse_keys` 경로**로 재므로 SSH·tmux 를 거친 실제 값이 나온다.
+    """
+    sec = 8.0
+    for i, a in enumerate(argv):
+        if a == "--key-probe" and i + 1 < len(argv):
+            try:
+                sec = float(argv[i + 1])
+            except ValueError:
+                pass
+    print(f"""
+자동반복 간격 측정 — 모터는 돌지 않는다 (드라이버를 열지도 않는다).
+
+  ↑ 또는 w 를 **{sec:.0f} 초 동안 꾹 누르고 있을 것.** 중간에 떼지 말 것.
+  q 로 조기 종료.
+""")
+    first: float | None = None
+    gaps: list[float] = []
+    last: float | None = None
+    n = 0
+    try:
+        kr_cm = KeyReader()
+    except termios.error:
+        print("!! 진짜 터미널에서 실행해야 한다 (tty 가 없다).")
+        return 1
+    try:
+        with kr_cm as kr:
+            t0 = time.monotonic()
+            while time.monotonic() - t0 < sec:
+                now = time.monotonic()
+                for k in kr.drain(now):
+                    if k == "QUIT":
+                        raise KeyboardInterrupt
+                    if k not in ("UP", "DOWN", "LEFT", "RIGHT"):
+                        continue
+                    n += 1
+                    if last is not None:
+                        g = now - last
+                        if first is None:
+                            first = g
+                        else:
+                            gaps.append(g)
+                    last = now
+                if kr.eof:
+                    break
+                time.sleep(0.005)
+    except KeyboardInterrupt:
+        pass
+    if n < 3 or first is None:
+        print(f"\n  키가 {n} 번밖에 안 들어왔다 — 자동반복이 꺼져 있거나 너무 짧게 눌렀다.")
+        print("  자동반복이 정말 없으면 데드맨을 쓸 수 없다. --hold-arm 을 크게 두거나")
+        print("  k 를 반복해 누르는 운용으로 가야 한다.")
+        return 1
+    gaps.sort()
+    print(f"\n  키 {n} 회 · 반복 {len(gaps)} 회")
+    print(f"  최초 반복 지연  **{first * 1000:.0f} ms**   ← --hold-arm 이 넘어야 하는 값")
+    if gaps:
+        med = gaps[len(gaps) // 2]
+        print(f"  반복 간격       중앙 {med * 1000:.0f} ms · "
+              f"최소 {gaps[0] * 1000:.0f} · 최대 {gaps[-1] * 1000:.0f} ms"
+              f"   ← --release-stop 이 넘어야 하는 값")
+    rec_arm = max(0.30, first * 1.5)
+    rec_rel = max(0.08, (gaps[-1] if gaps else 0.05) * 3)
+    print(f"\n  권장:  --hold-arm {rec_arm:.2f}  --release-stop {rec_rel:.2f}")
+    print("  기본값: --hold-arm 0.80  --release-stop 0.10")
+    return 0
+
+
 def main() -> int:
-    # ⚠ --self-test / --replay 는 --rpm 이 required 라 주 파서를 못 탄다. 먼저 가른다.
+    # ⚠ --self-test / --replay / --key-probe 는 --rpm 이 required 라 주 파서를 못 탄다.
     if "--self-test" in sys.argv[1:]:
         return self_test()
+    if "--key-probe" in sys.argv[1:]:
+        return key_probe(sys.argv[1:])
     if "--replay" in sys.argv[1:]:
         return replay(sys.argv[1:])
     args = build_parser().parse_args()
@@ -1266,7 +1407,9 @@ def main() -> int:
 
     slope_a = args.max_rpm / args.accel
     slope_d = args.max_rpm / args.decel
-    reach = args.watchdog * args.max_rpm / 60.0 + args.max_rpm / 60.0 * args.decel / 2
+    # 손을 뗀 뒤 활주 = (유예 동안 전속) + (감속 램프의 평균). 유예는 최악을 잡아
+    # 미무장(hold_arm) 기준으로 낸다 — 조작자가 보는 숫자는 보수적이어야 한다.
+    reach = args.hold_arm * args.max_rpm / 60.0 + args.max_rpm / 60.0 * args.decel / 2
     warn = ""
     # breakin 은 무부하에서도 667 rpm/s (RAMP_STEP 200 / RAMP_DT 0.30) 로 돈다.
     if slope_a > 1000:
@@ -1284,16 +1427,19 @@ def main() -> int:
 
   설정 {args.rpm} rpm · 상한 {args.max_rpm} rpm · 증감 {args.step} · 선회 {args.turn_rpm} rpm
   가속 {args.accel:.1f} s ({slope_a:.0f} rpm/s) · 감속 {args.decel:.1f} s ({slope_d:.0f} rpm/s)
-  워치독 {args.watchdog:.1f} s (경성 {args.watchdog_hard:.1f} s) · 세션 상한 {args.max_sec:.0f} s
+  데드맨 손뗌→정지 {args.release_stop:.2f} s (무장 전 {args.hold_arm:.2f} s) · space=급정지
+  워치독 경성 {args.watchdog_hard:.1f} s · 세션 상한 {args.max_sec:.0f} s
   구동 최소 유지 {args.min_drive:.1f} s (유효 {args.min_drive - SKIP_SEC - 0.05:.2f} s)
   국면 전환 정지 요구 {args.phase_rest:.1f} s{warn}
 
-  ⚠ 손을 뗀 뒤 최대 활주 ≈ {reach / 30 * WHEEL_CIRC:.1f} m — 그만큼은 앞이 비어 있어야 한다.
+  ⚠ 손을 뗀 뒤 최대 활주 ≈ {reach / 30 * WHEEL_CIRC:.1f} m (미무장 최악) — 그만큼은 앞이 비어 있어야 한다.
+     space 급정지는 램프를 안 타므로 이보다 훨씬 짧다.
 
   ⚠ tmux / nohup 아래에서 실행하지 말 것 — SSH 가 끊겨도 프로세스가 살아남아
     조종자 없이 주행한다. 그 경우 워치독이 유일한 보호다.
 
-  조작  ↑/w 전진   ↓/s 후진   ←/a 좌선회   →/d 우선회   space/ESC 정지
+  조작  ↑/w 전진   ↓/s 후진   ←/a 좌선회   →/d 우선회   space/ESC **급정지**
+        ⚠ 손을 떼면 선다 — 유지하려면 키를 누르고 있을 것 (자동반복이 데드맨을 연다)
         PgUp/PgDn 속도 (+/- 도 됨)   k 킵얼라이브   m 표식   q 종료   Ctrl-C 중단
   국면  t 이동 (= 예열 겸함, 참고 자료)      r 시험 (= 판정 자료)
         정지 상태에서만 바뀌고, 바꾼 뒤 {args.phase_rest:.0f} s 는 더 정지해 있어야 한다
@@ -1739,7 +1885,8 @@ def replay(argv: list[str]) -> int:
 # ─────────────────────────────────────────────── 자체 시험 (하드웨어 무관)
 def _args_for_test(**kw):
     a = argparse.Namespace(rpm=3000, turn_rpm=300, max_rpm=3000, step=100,
-                           watchdog=2.0, watchdog_hard=5.0, reverse_dwell=0.7,
+                           watchdog_hard=5.0, reverse_dwell=0.7,
+                           release_stop=0.1, hold_arm=0.8,
                            phase_rest=3.0, accel=2.0, decel=1.5, min_drive=5.0)
     for k, v in kw.items():
         setattr(a, k, v)
@@ -1918,6 +2065,70 @@ def self_test() -> int:
     ck("④ 워치독 1 단", st4.wd_fired and st4.dir == 0)
     st4.update(5.5, 3000.0, 3000.0, 0.0)
     ck("④ 워치독 2 단", bool(st4.abort), f"{st4.abort}")
+
+    # ── DriveState ④b 데드맨 · 급정지 ─────────────────────────────
+    # 손을 떼면 선다. 다만 터미널 자동반복은 첫 키와 첫 반복 사이가 250~660 ms 라,
+    # 그 공백에서 오발하면 도구가 못 쓰게 된다 — 2 단 유예가 그것을 막는다.
+    d1 = DriveState(_args_for_test())
+    d1.on_key(0.0, "UP")
+    d1.update(0.5, 500.0, 500.0, 0.0)
+    ck("④b 미무장 유예 안에서는 계속 간다", d1.dir == 1 and not d1.wd_fired,
+       f"dir={d1.dir} fired={d1.wd_fired}")
+    d1.update(0.9, 500.0, 500.0, 0.0)
+    ck("④b 미무장 유예 넘으면 선다", d1.dir == 0 and d1.wd_fired, f"dir={d1.dir}")
+
+    # 자동반복이 오면 무장되고, 그때부터 release_stop 으로 조인다
+    d2 = DriveState(_args_for_test())
+    d2.on_key(0.0, "UP")
+    ck("④b 첫 키는 무장 안 됨", not d2.hold_armed)
+    d2.on_key(0.05, "UP")
+    ck("④b 반복이 오면 무장", d2.hold_armed)
+    d2.update(0.12, 500.0, 500.0, 0.0)
+    ck("④b 무장 후 0.07s 는 유지", d2.dir == 1, f"dir={d2.dir}")
+    d2.update(0.20, 500.0, 500.0, 0.0)
+    ck("④b 무장 후 0.15s 면 선다", d2.dir == 0 and d2.wd_fired, f"dir={d2.dir}")
+
+    # 자동반복이 계속 들어오는 동안에는 절대 안 선다 (30 Hz 를 3 초)
+    d3 = DriveState(_args_for_test())
+    stopped = False
+    for i in range(90):
+        tk = i / 30.0
+        d3.on_key(tk, "UP")
+        d3.update(tk, 500.0, 500.0, 0.0)
+        if d3.dir == 0:
+            stopped = True
+    ck("④b 반복 중에는 안 선다", not stopped and d3.dir == 1, f"dir={d3.dir}")
+
+    # 느린 링크 — 반복이 hold_arm 보다 느리게 오면 무장되지 않고, 그래도 안 선다
+    d3b = DriveState(_args_for_test())
+    for i in range(5):
+        tk = i * 0.7                      # 700 ms 간격 < hold_arm 0.8
+        d3b.on_key(tk, "UP")
+        d3b.update(tk, 500.0, 500.0, 0.0)
+    ck("④b 느린 반복도 유지된다", d3b.dir == 1, f"dir={d3b.dir}")
+
+    # ★ space 는 램프를 안 탄다 — 그 자리에서 0
+    d4 = DriveState(_args_for_test())
+    d4.on_key(0.0, "UP")
+    d4.update(1.0, 500.0, 500.0, 0.0)
+    mid = d4.cmd_now
+    ck("④b 급정지 전에는 지령이 올라와 있다", mid > 100, f"{mid}")
+    d4.on_key(1.0, "STOP")
+    ck("④b space 는 즉시 0", abs(d4.ramp.value(1.0)) < 1e-9, f"{d4.ramp.value(1.0)}")
+    d4.update(1.0, 500.0, 500.0, 0.0)
+    ck("④b 급정지 뒤 지령 0", abs(d4.cmd_now) < 1e-9 and d4.dir == 0, f"{d4.cmd_now}")
+    ck("④b 급정지가 무장을 푼다", not d4.hold_armed)
+
+    # 데드맨은 **감속** 정지다 — 급정지와 달리 램프를 탄다
+    d5 = DriveState(_args_for_test())
+    d5.on_key(0.0, "UP")
+    d5.update(1.0, 500.0, 500.0, 0.0)          # 유예 초과 → 이 틱에 감속 개시
+    ck("④b 데드맨은 지령을 안 끊는다", d5.dir == 0 and d5.cmd_now > 100,
+       f"dir={d5.dir} cmd={d5.cmd_now}")
+    d5.update(1.2, 500.0, 500.0, 0.0)
+    ck("④b 데드맨은 램프를 탄다", 1 < d5.cmd_now < 1500, f"{d5.cmd_now}")
+    d5.update(2.0, 500.0, 500.0, 0.0)
+    ck("④b 데드맨도 결국 0", abs(d5.cmd_now) < 1e-9, f"{d5.cmd_now}")
 
     # ── DriveState ⑤ +/- 와 선회 독립 ──────────────────────────────
     st5 = DriveState(_args_for_test(rpm=500, max_rpm=1000, step=100))

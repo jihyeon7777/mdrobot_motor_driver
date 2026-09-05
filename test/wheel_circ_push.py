@@ -46,6 +46,19 @@
 산출물
   test/logs/circ_<tag>.csv   레그별 원시값 + 파생값. 태그 기본 `circ<MMDD>`
 
+분담 모드 — 조작자는 밀고, 판독은 이쪽에서 한다
+  대화형 Enter 대신 **정지 상태에서 두 번 읽는다.** 로봇이 두 판독 시점 모두 서
+  있으므로 "선에 맞췄다" 와 실제 판독 사이의 지연이 오차가 되지 않는다.
+
+      python3 test/wheel_circ_push.py --read              # 시작선 (torque_off 후 판독)
+      (민다)
+      python3 test/wheel_circ_push.py --read              # 끝선
+      python3 test/wheel_circ_push.py --dist 5.0 \
+          --legs "12345:-12300>17820:-17790"              # a1:a2>b1:b2, 쉼표로 여러 레그
+
+  ⚠ 왕복으로 두 레그를 재면 드리프트의 원인이 갈린다 — 손으로도 흐르면 기하·경사,
+    곧게 돌아오면 구동에 딸린 미끄러짐이다. 모터를 한 번도 안 쓰고 갈린다.
+
 하드웨어 없이 확인하기
   python3 test/wheel_circ_push.py --self-test
 """
@@ -202,8 +215,82 @@ def self_test() -> int:
     # ⑩ 빈 입력에 안 죽는다
     ck("⑩ 빈 요약", "레그가 없다" in summarize([]))
 
+    # ⑪ 분담 모드 파서
+    lg = parse_legs("100:-200>5100:-5200 , 5100:-5200>100:-200")
+    ck("⑪ 레그 2 개", len(lg) == 2, str(len(lg)))
+    ck("⑪ 시작/끝 판독", lg[0][0] == {1: 100, 2: -200} and lg[0][1] == {1: 5100, 2: -5200},
+       str(lg[0]))
+    ck("⑪ 왕복 2 번째가 역방향", lg[1][0] == lg[0][1] and lg[1][1] == lg[0][0])
+    r11 = leg_row(1, 5.0, *lg[0])
+    ck("⑪ 왕복 레그도 경고 없음", r11["note"] == "", r11["note"])
+    for bad_spec in ("100-200>5100:-5200", "100:200", "x:1>2:3"):
+        try:
+            parse_legs(bad_spec); ok = False
+        except SystemExit:
+            ok = True
+        ck(f"⑪ 형식 오류 거부 {bad_spec!r}", ok)
+
     print("\n자체시험 " + ("전체 통과" if not fails else f"{len(fails)} 건 실패: {fails}"))
     return 1 if fails else 0
+
+
+# ─────────────────────────────────────────────────────────── 분담 모드
+
+def read_only(port: str) -> int:
+    """위치만 읽는다. 지령은 안 보내고 torque_off 만 확실히 해 둔다.
+
+    ⚠ 정지 상태에서 읽는 값이므로 조작자와의 왕복 지연이 오차가 되지 않는다.
+    """
+    out = {}
+    for sid in IDS:
+        d = SingleMotorDriver.open(port, slave_id=sid, timeout=0.3)
+        try:
+            d.torque_off()
+            out[sid] = d.get_position()
+            print(f"  id{sid}  pos {out[sid]:+d}   volt {d.get_voltage():.2f} V"
+                  f"   rpm {d.get_speed():+d}")
+        finally:
+            d.close()
+    print(f"\n  --legs 용:  {out[1]}:{out[2]}>…")
+    return 0
+
+
+def parse_legs(spec: str) -> list[tuple[dict, dict]]:
+    """'a1:a2>b1:b2, …' → [({1:a1,2:a2}, {1:b1,2:b2}), …]"""
+    out = []
+    for i, part in enumerate(p.strip() for p in spec.split(",") if p.strip()):
+        try:
+            a, b = part.split(">")
+            a1, a2 = (int(x) for x in a.split(":"))
+            b1, b2 = (int(x) for x in b.split(":"))
+        except ValueError as e:
+            raise SystemExit(f"!! 레그 {i + 1} 형식 오류 ({part!r}) — "
+                             f'"a1:a2>b1:b2" 여야 한다') from e
+        out.append(({1: a1, 2: a2}, {1: b1, 2: b2}))
+    return out
+
+
+def from_legs(args) -> int:
+    if args.dist is None or args.dist <= 0:
+        print("!! --legs 에는 --dist 가 함께 필요하다."); return 1
+    rows = [leg_row(i, args.dist, a, b)
+            for i, (a, b) in enumerate(parse_legs(args.legs), 1)]
+    outdir = REPO / "test" / "logs"
+    outdir.mkdir(parents=True, exist_ok=True)
+    tag = args.tag or f"circ{time.strftime('%m%d')}"
+    path = outdir / f"circ_{tag}.csv"
+    if path.exists():
+        print(f"!! 이미 있다: {path.name} — 다른 --tag 를 쓸 것."); return 1
+    for r in rows:
+        print(f"  레그 {r['leg']}: Δ1={r['d1']:+d} Δ2={r['d2']:+d} → "
+              f"C1={r['c1_m']} C2={r['c2_m']} 비={r['c_ratio']}"
+              + (f"\n    {r['note']}" if r["note"] else ""))
+    with path.open("w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=FIELDS)
+        w.writeheader(); w.writerows(rows)
+    print(f"\n저장 {path}")
+    print(summarize(rows))
+    return 0
 
 
 # ─────────────────────────────────────────────────────────── 본체
@@ -215,12 +302,20 @@ def main() -> int:
     p.add_argument("--dist", type=float, help="줄자로 잰 시작선→끝선 거리 m")
     p.add_argument("--tag", default=None, help="로그 태그 (기본 circ<MMDD>)")
     p.add_argument("--port", default=MD_PORT)
+    p.add_argument("--read", action="store_true",
+                   help="torque_off 후 위치만 읽고 끝낸다 (분담 모드의 판독 단계)")
+    p.add_argument("--legs", default=None,
+                   help='분담 모드 계산 — "a1:a2>b1:b2" 를 쉼표로 이어 붙인다')
     p.add_argument("--self-test", action="store_true",
                    help="하드웨어 없이 순수 로직만 확인한다")
     args = p.parse_args()
 
     if args.self_test:
         return self_test()
+    if args.read:
+        return read_only(args.port)
+    if args.legs:
+        return from_legs(args)
     if args.dist is None or args.dist <= 0:
         print("!! --dist 가 필요하다 (줄자로 잰 m).")
         return 1
