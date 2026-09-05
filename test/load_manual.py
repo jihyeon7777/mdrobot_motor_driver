@@ -129,10 +129,17 @@ CMD_QUANT = 5            # 지령 양자화 rpm — 이보다 작은 변화는 �
 # 무부하 스윕(sweepa/b)이 300~3000 이라 대면 비교를 하려면 여기까지 열려 있어야 한다.
 MAX_RPM_CEIL = 3000      # 넘기려면 --unsafe-max 를 따로 줘야 한다
 
-# 바퀴 둘레 m — 10 인치 타이어 (π × 0.254). 2026-09-03 확정.
-# counts → m 은 /900 × 이 값 (30 counts/모터축 × 감속기 30:1 = 900 counts/바퀴 회전).
-# ⚠ **화면 표시 전용이다.** 어떤 판정에도 안 쓰이므로 인자로 열어 두지 않는다 —
-#   현장에서 정할 것이 하나라도 적은 편이 낫다.
+# 30 counts/모터축 × 감속기 30:1 → 바퀴 1 회전 = 900 counts.
+COUNTS_PER_WHEEL_REV = 900
+
+# 바퀴 둘레 m — 10 인치 타이어 (π × 0.254). 2026-09-03 **가정**, 아직 자로 확인 안 됐다.
+# counts → m 은 /COUNTS_PER_WHEEL_REV × 이 값.
+# ⚠ **이 스크립트 안에서는 화면 표시 전용이다.** 어떤 판정에도 안 쓰이므로 인자로 열어
+#   두지 않는다 — 현장에서 정할 것이 하나라도 적은 편이 낫다.
+# ⚠ **다만 사후 분석은 여기에 매달려 있다.** 등가 항력은 F_eq = ΔP/v 이고 v ∝ C 이므로
+#   **F_eq ∝ 1/C** 다. C 가 x% 틀리면 20260903 §4.3 의 21 N 이 그대로 x% 틀린다.
+#   "10 인치" 가 림 기준이면 외경은 더 크다 (20260903 §1.4 의 경고).
+#   하중 하 구름둘레 실측은 `test/wheel_circ_push.py` 가 한다.
 WHEEL_CIRC = 0.798
 TURN_RPM_CEIL = 600      # 제자리 선회 상한. 고속 선회는 로봇을 던지는 방식이다
 DECEL_MIN_S = 0.4        # 감속 시간 하한 — 더 급하면 회생 과전압 여지가 커진다
@@ -859,7 +866,7 @@ def draw(st: DriveState, row: dict, seg: Segmenter, pico, zero_ref,
         ok = " ✓" if cur["kind"] == "drive" and dur >= args.min_drive else ""
         goal = f"/{args.min_drive:.0f}" if cur["kind"] == "drive" else ""
         tail = f" [{cur['label']} {dur:4.1f}{goal}s{ok}]"
-    dist = f"{dpos / 900.0 * WHEEL_CIRC:+6.1f}m"
+    dist = f"{dpos / COUNTS_PER_WHEEL_REV * WHEEL_CIRC:+6.1f}m"
     wd = max(0.0, st.wd - (t - st.last_input))
     line = (f"{PHASE_KO[st.sphase]} {icon} 설정{st.setpoint:4d} 지령{st.cmd_now:+7.0f} "
             f"실측{r1 if r1 is not None else '--':>6}/{r2 if r2 is not None else '--':>6} "
@@ -910,7 +917,7 @@ def proj(row: dict) -> tuple[float, float]:
 
 
 def counts_of(row: dict, base: dict) -> tuple[float, float]:
-    """(직진분, 회전분) counts. 30 counts/모터축 × 30:1 → 바퀴 1 회전 = 900 counts."""
+    """(직진분, 회전분) counts. 바퀴 1 회전 = `COUNTS_PER_WHEEL_REV` (900) counts."""
     p1, p2 = row.get("pos1"), row.get("pos2")
     if p1 is None or p2 is None or not base:
         return 0.0, 0.0
